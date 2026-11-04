@@ -12,7 +12,7 @@
  */
 
 import { FIELD_SCENARIO, OWNER_SHARE, type SimulationScenario } from '@/core/fleet/scenario';
-import type { RiderKind } from '@/core/fare';
+import { resetFareRules, type RiderKind } from '@/core/fare';
 import { defaultRoute, stopsAhead, type Route } from '@/core/geo/routes';
 import type { LocalPoint } from '@/core/geo/projection';
 import { roadsidePoint } from '@/core/people/stopLayout';
@@ -333,6 +333,44 @@ const DRIVER: DemoScene[] = [
     },
   },
   {
+    id: 'two-ask-at-once',
+    side: 'driver',
+    title: 'Two drivers ask at once',
+    shows:
+      'The same jam, two jeepneys side by side, both drivers asking Muse at once. NVG 3318 asked a few seconds first: the eight on the longer side street are held for it on the fleet board while its driver hears the answer. Muse does not send this driver to fight over them (no agawan), but round the other street, where three wait. NVG 3318 turns off a little later, as its driver says yes.',
+    say: 'Sabay kaming nagtanong ng katabi kong jeep. Saan ako dadaan na hindi kami nag-aagawan ng pasahero?',
+    sayEn:
+      "The jeepney next to me asked at the same time. Which way do I take so we don't fight over riders?",
+    at: '17:40',
+    vehicles: [
+      { plate: 'SBY 2610', before: [SAMPAGUITA, 150], kind: 'jeepney' },
+      { plate: 'NVG 3318', before: [SAMPAGUITA, 135], kind: 'jeepney' },
+      ...queue(SAMPAGUITA, 115, -560, 27),
+    ],
+    stage: (s) => {
+      s.seat(0, 14, [[MOUNTAIN_VIEW, 3]]);
+      // The one beside: seats for the eight on its side street.
+      s.seat(1, 12);
+      for (let i = 2; i <= 28; i++) if (i !== SEATS_AHEAD) s.fill(i);
+      s.seat(SEATS_AHEAD, 12);
+      s.jam(-60, 900, 1.2);
+      for (let k = 0; k < 6; k++) s.flagging(MALARIA, 30, MOUNTAIN_VIEW, 'student');
+      // The one beside asked first: its Muse is still answering, its riders held; it turns in 45 s.
+      void stageWays(
+        s.twin,
+        0,
+        [
+          [
+            { at: 0.45, count: 4, to: FAIRVIEW },
+            { at: 0.7, count: 4, to: FAIRVIEW },
+          ],
+          [{ at: 0.5, count: 3, to: FAIRVIEW }],
+        ],
+        { vehicle: 1, way: 0, turnsInS: 45 },
+      );
+    },
+  },
+  {
     id: 'espana-rush',
     side: 'driver',
     title: 'Rush hour on España',
@@ -431,6 +469,22 @@ const DRIVER: DemoScene[] = [
       s.seat(1, 6);
       s.waiting(MATER_CARMELI, 9);
     },
+  },
+  {
+    id: 'new-fare-matrix',
+    side: 'driver',
+    title: 'New fare matrix from a photo',
+    shows:
+      'A new fare order (a sample: ₱15 for the first 4 km, then ₱2.20 a km). The driver snaps the matrix taped inside; Muse reads every row, the app checks each against one fare rule, and from then on every fare in the app uses it. Muse says what it adds in a day of riders.',
+    say: 'May bagong fare matrix. Basahin mo at gamitin na sa pamasahe ko. Magkano ang dagdag sa isang araw?',
+    sayEn:
+      "There's a new fare matrix. Read it and use it for my fares. How much more is that in a day?",
+    at: '06:20',
+    vehicles: [{ plate: 'FMX 3104', before: [MALARIA, 300], kind: 'jeepney' }],
+    stage: (s) => {
+      s.seat(0, 9);
+    },
+    photo: '/demo/fare-matrix-new.jpg',
   },
   {
     id: 'bunching',
@@ -780,6 +834,22 @@ const COMMUTER: DemoScene[] = [
     camera: 'behind',
   },
   {
+    id: 'check-my-fare',
+    side: 'commuter',
+    title: 'Was I charged right?',
+    shows:
+      'On a jeepney as a student, Malaria to SM Fairview, and asked for ₱20. A photo of the fare matrix posted inside: Muse reads it, the app checks it, and works out your ride by the km with your 20% student discount.',
+    why: 'The matrix inside is small print on a moving jeepney, fares change by LTFRB order, and the student, senior and PWD discount is often not given. Few can work out a fare by the km in their head. A photo settles it, so you pay what is right, without an argument.',
+    who: 'Students, seniors and PWD, new or sanay na: the discount is theirs by law. Also anyone new to a route who does not know its fare.',
+    say: 'Estudyante ako, ₱20 ang siningil sa akin. Tama ba? Ito ang fare matrix sa loob.',
+    sayEn: "I'm a student and I was charged ₱20. Is that right? Here's the fare matrix inside.",
+    at: '07:30',
+    vehicles: [{ plate: 'STU 4417', before: [MOUNTAIN_VIEW, 300], kind: 'jeepney' }],
+    stage: (s) => s.aboard(0, FAIRVIEW, 11, 'student'),
+    photo: '/demo/fare-matrix.jpg',
+    camera: 'behind',
+  },
+  {
     id: 'long-queue',
     side: 'commuter',
     title: 'Long queue for a modern jeepney',
@@ -947,6 +1017,8 @@ export function startScene(scene: DemoScene, tries = ROUTE_TRIES): void {
   app.setSimulationSpeed(scene.speed ?? 1);
   app.setOtherRoutes(scene.quiet ? false : (useApp.getState().demoKept?.otherRoutes ?? true));
   app.setDemoAsk(null);
+  // A fare matrix read in another scene is that scene's: each starts from the published fares.
+  resetFareRules();
   app.setDemoScene(scene.id);
   app.setFocus({ route, ...sceneFleet(scene, route) });
 }

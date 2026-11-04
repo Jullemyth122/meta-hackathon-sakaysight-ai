@@ -36,6 +36,20 @@ export const FARE_BY_VEHICLE: Record<FleetKind, FareRule> = {
   bus: PH_CITY_BUS_AIRCON,
   uv: PH_UV_EXPRESS,
 };
+const PUBLISHED_FARES: Readonly<Record<FleetKind, FareRule>> = { ...FARE_BY_VEHICLE };
+
+/**
+ * A new fare for one kind of vehicle, from a fare matrix read off a photo
+ * (fareMatrix.ts): from now on every fare in the app is worked out with it.
+ */
+export function setFareRule(kind: FleetKind, rule: FareRule): void {
+  FARE_BY_VEHICLE[kind] = rule;
+}
+
+/** Back to the fares above, as published (a demo scene starts from them). */
+export function resetFareRules(): void {
+  Object.assign(FARE_BY_VEHICLE, PUBLISHED_FARES);
+}
 
 /**
  * Who a rider is, for the fare: students, senior citizens and persons with

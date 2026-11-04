@@ -30,11 +30,14 @@ import { newRiderPose } from '@/core/people/riderMotion';
 import { curveWay } from '@/core/geo/curveWay';
 import { Polyline } from '@/core/geo/polyline';
 import { roadSeconds, type Round, type RoundAsk } from '@/core/people/wayRound';
-import { discountedKind, FARE_BY_VEHICLE, fareFor } from '@/core/fare';
+import { discountedKind, FARE_BY_VEHICLE, fareFor, setFareRule, type FareRule } from '@/core/fare';
+import { fareOnMatrix, parseRows, ruleFromMatrix } from '@/core/fareMatrix';
+import type { FleetKind } from '@/core/vehicles/specs';
 import { fleetPose, kerbLanePose } from '@/scene/world/lanes';
 import { FUEL, stopsByTheRoad } from '@/core/vehicles/specs';
 import type { ToolRunner } from '@/net/agent';
 import { boundaryLeft } from './earnings';
+import { boardOf } from './fleetBoard';
 import { arrivalsAt, getNetwork, loadPlaces } from './network';
 import { phonesNear } from './phonesNear';
 import { useApp } from './store';
@@ -361,7 +364,15 @@ export async function stageWays(
   twin: TwinRuntime,
   index: number,
   byWay: ReadonlyArray<readonly StreetGroup[]>,
-  first?: { vehicle: number; way: number },
+  first?: {
+    vehicle: number;
+    way: number;
+    /**
+     * Its driver asked a moment ago and Muse is still answering: its riders are
+     * held on the fleet board, and it turns off this many seconds later.
+     */
+    turnsInS?: number;
+  },
   /** "You" (a commuter scene), waiting by way `way` with its first group, going to stop `to`. */
   me?: { way: number; to: number },
 ): Promise<number> {
@@ -380,6 +391,7 @@ export async function stageWays(
   const v = twin.fleet.vehicles[index]!;
   const L = twin.route.polyline.length;
   let placed = 0;
+  const placedBy: number[][] = byWay.map(() => []);
   byWay.forEach((groups, w) => {
     const way = ways[w];
     if (!way || way.street.length < 2) return;
@@ -421,7 +433,7 @@ export async function stageWays(
         // Side by side by the street, a step apart.
         const across = 3 + 0.7 * (k % 2);
         const step = 0.8 * Math.floor(k / 2);
-        twin.crew.join(back.i, g.to, 0, 'walk', {
+        const id = twin.crew.join(back.i, g.to, 0, 'walk', {
           kind: 'regular',
           flagS,
           flagAt: {
@@ -430,6 +442,7 @@ export async function stageWays(
           },
           byStreet: true,
         });
+        placedBy[w]!.push(id);
         placed++;
       }
     }
@@ -468,7 +481,25 @@ export async function stageWays(
   const sent = first && ways[first.way];
   if (sent) {
     const driven = drivenWay(twin, first.vehicle, sent, round.fromS);
-    twin.fleet.takeWay(first.vehicle, driven.line, driven.enterS, driven.exitS);
+    const turn = () => twin.fleet.takeWay(first.vehicle, driven.line, driven.enterS, driven.exitS);
+    if (first.turnsInS === undefined) turn();
+    else {
+      // Held for it while its driver hears Muse out, as far as its seats go; then it turns.
+      const o = twin.fleet.vehicles[first.vehicle]!;
+      const board = boardOf(twin);
+      board.hold({
+        vehicle: first.vehicle,
+        plate: o.plate,
+        riders: new Set(placedBy[first.way]!.slice(0, Math.max(0, o.capacity - o.occupancy))),
+        enterS: driven.enterS,
+        exitS: driven.exitS,
+      });
+      setTimeout(() => {
+        if (!board.of(first.vehicle)) return;
+        board.release(first.vehicle);
+        turn();
+      }, first.turnsInS * 1000);
+    }
   }
   return placed;
 }
@@ -653,6 +684,18 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
         claimed.add(p.id);
       }
     }
+    // Asked for first by another driver, whose Muse is still answering: held
+    // for them on the fleet board (agawan is settled by who asked first).
+    const board = boardOf(twin);
+    const heldFor = new Map<number, string>();
+    for (const h of board.standing(index)) {
+      if (twin.fleet.vehicles[h.vehicle]?.detour) continue;
+      for (const id of h.riders)
+        if (!claimed.has(id)) {
+          claimed.add(id);
+          heldFor.set(id, h.plate);
+        }
+    }
     const aheadOnRoad = rivals
       .filter(({ o }) => !o.detour && o.capacity > o.occupancy)
       .map(({ o }) => ({ d: distanceTo(route, me, o.s), room: o.capacity - o.occupancy }))
@@ -684,15 +727,28 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
         const line = streetLines.get(r);
         return p.byStreet && !!line && line.project(p).offset <= BY_THE_STREET_M;
       });
-    // A way two are already taking is full: sending more would jam it.
+    // A way two are already taking, or have asked for, is full: sending more would jam it.
     const onTheWay = (r: Round) => {
       const driven = drivenWay(twin, index, r, fromS);
-      return rivals.filter(
+      const taking = rivals.filter(
         ({ o }) =>
           o.detour &&
           Math.abs(o.detour.enterS - driven.enterS) < SAME_WAY_M &&
           Math.abs(o.detour.exitS - driven.exitS) < SAME_WAY_M,
       ).length;
+      const asked = board
+        .onTheWay(driven.enterS, driven.exitS, index, SAME_WAY_M)
+        .filter((h) => !twin.fleet.vehicles[h.vehicle]?.detour).length;
+      return taking + asked;
+    };
+    /** Who asked first for a way's riders, and how many of them. */
+    const heldOn = (who: typeof waiting) => {
+      const plates = new Map<string, number>();
+      for (const p of who) {
+        const plate = heldFor.get(p.id);
+        if (plate) plates.set(plate, (plates.get(plate) ?? 0) + 1);
+      }
+      return [...plates].map(([plate, riders]) => ({ plate, riders }));
     };
     const prices = fuelAhead(route, stationsFor(route), whereNow())
       .map((f) => f.expectedPhpPerL)
@@ -755,6 +811,7 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
             byStreets(r, takenByOthers).length +
             onRoad(0, r.leaveM, takenByOthers).length +
             onRoad(r.rejoinM, endM, takenByOthers).length,
+          heldForDriversWhoAskedFirst: heldOn(byStreets(r, takenByOthers)),
           vehiclesAlreadyOnIt: already,
           full: already >= MOST_ON_A_WAY,
           leavesTheRoute: true,
@@ -770,6 +827,25 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
         score(b) > score(a) || (score(b) === score(a) && b.minutes < a.minutes) ? b : a,
       );
     const fastest = options.reduce((a, b) => (b.minutes < a.minutes ? b : a));
+    // This driver asked: the riders the best way picks up by its side streets
+    // are held for them on the board while they hear Muse out.
+    const bestK = options.indexOf(best);
+    const bestRound = bestK > 0 ? rounds[bestK - 1]! : null;
+    if (bestRound) {
+      const driven = drivenWay(twin, index, bestRound, fromS);
+      const before = onRoad(0, bestRound.leaveM).length;
+      board.hold({
+        vehicle: index,
+        plate: v.plate,
+        riders: new Set(
+          byStreets(bestRound)
+            .slice(0, Math.max(0, seats - before))
+            .map((p) => p.id),
+        ),
+        enterS: driven.enterS,
+        exitS: driven.exitS,
+      });
+    } else board.release(index);
 
     let byTwin = weighed.get(twin);
     if (!byTwin) weighed.set(twin, (byTwin = new Map()));
@@ -777,6 +853,12 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
       { way: 'A', round: null, fromS },
       ...rounds.map((r, k) => ({ way: WAY_LETTERS[k + 1]!, round: r, fromS })),
     ]);
+    const heldLabel = (o: (typeof options)[number]) => {
+      const held = 'heldForDriversWhoAskedFirst' in o ? o.heldForDriversWhoAskedFirst : [];
+      return held.length
+        ? ` · ${held.map((h) => `${h.riders} held for ${h.plate}`).join(', ')}`
+        : '';
+    };
     // Drawn, each in its colour: the route to the same end, the others round.
     const line = route.polyline;
     const ahead = (m: number) => line.pointAt((((fromS + m * v.direction) % L) + L) % L);
@@ -796,7 +878,7 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
         points: k === 0 ? roadFrom(0, endM) : drawnWay(rounds[k - 1]!),
         label: o.full
           ? `${o.way} · full: ${o.vehiclesAlreadyOnIt} on it`
-          : `${o.way} · ${o.netPhp >= 0 ? '+' : '−'}₱${Math.abs(o.netPhp)} · ${o.minutes} min${o === best ? ' · best' : ''}`,
+          : `${o.way} · ${o.netPhp >= 0 ? '+' : '−'}₱${Math.abs(o.netPhp)} · ${o.minutes} min${o === best ? ' · best' : ''}${heldLabel(o)}`,
         colour: WAY_COLOURS[k]!,
       })),
     );
@@ -810,7 +892,7 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
       fastest: fastest.way,
       dieselPhpPerL: Math.round(phpPerL * 100) / 100,
       seatsFree: seats,
-      note: 'Fares are each rider’s whole trip at the LTFRB rate; diesel for the km and the extra minutes crawling, at this week’s pump price. First come, first served: riders another jeepney reaches first are theirs, and a way two jeepneys already take is full.',
+      note: 'Fares are each rider’s whole trip at the LTFRB rate; diesel for the km and the extra minutes crawling, at this week’s pump price. First come, first served: riders another jeepney reaches first are theirs; riders another driver asked for first are held for them for a minute (heldForDriversWhoAskedFirst, by plate); a way two jeepneys take or asked for is full. The best way’s riders are now held for this driver.',
       source: 'map streets and simulated riders; prices DOE',
     };
   }
@@ -829,7 +911,9 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
           k === ways!.indexOf(w) ? { ...d, label: `✓ ${d.label.replace(/^✓ /, '')}` } : d,
         ),
       );
+    const board = boardOf(twin);
     if (!w.round) {
+      board.release(index);
       tick();
       return { taken: true, way: w.way, staysOnTheRoute: true };
     }
@@ -842,13 +926,22 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
         Math.abs(o.detour.enterS - driven.enterS) < SAME_WAY_M &&
         Math.abs(o.detour.exitS - driven.exitS) < SAME_WAY_M,
     ).length;
-    if (onIt >= MOST_ON_A_WAY)
+    // And whoever asked for it before this driver did (their minute not up).
+    const mine = board.of(index);
+    const askedFirst = board
+      .onTheWay(driven.enterS, driven.exitS, index, SAME_WAY_M)
+      .filter(
+        (h) => !twin.fleet.vehicles[h.vehicle]?.detour && (!mine || h.askedAt < mine.askedAt),
+      );
+    if (onIt + askedFirst.length >= MOST_ON_A_WAY)
       return {
         taken: false,
-        why: `${onIt} jeepneys took it first: compare the ways again.`,
+        why: `${[...askedFirst.map((h) => h.plate), ...(onIt ? [`${onIt} on it`] : [])].join(', ')} took or asked for it first: compare the ways again.`,
       };
     const turning = twin.fleet.takeWay(index, driven.line, driven.enterS, driven.exitS);
     if (!turning) return { taken: false, why: 'Too late to turn off for it: stay on the route.' };
+    // On its way down the street now: who waits by it is this vehicle's (detour), not held.
+    board.release(index);
     tick();
     return {
       taken: true,
@@ -958,11 +1051,133 @@ export function driverTools(twin: TwinRuntime, index: number): ToolRunner {
           uTurnNow: turning ? `after ${twin.route.stops[stop]!.name}, back to ${crowd.stop}` : null,
         };
       }
+      case 'use_fare_matrix':
+        return useFareMatrix(twin, index, args);
       case 'show_on_map':
         return showOnMap(twin, args);
       default:
         return { error: `No tool ${name}` };
     }
+  };
+}
+
+// ---- Fare matrix ------------------------------------------------------------
+
+const FLEET_KINDS: readonly FleetKind[] = ['jeepney', 'modern', 'uv', 'bus'];
+/** A day's riders on one vehicle, for what a new fare means for it: drivers' own count (Notes: 200–300). */
+const RIDERS_A_DAY = 250;
+/** An average ride (km), as the planner takes it. */
+const AVERAGE_RIDE_KM = 3.8;
+
+const fareSaid = (rule: FareRule) => ({
+  minimumPhp: rule.base,
+  forTheFirstKm: rule.baseKm,
+  perKmAfterPhp: rule.perKm,
+  discountPct: rule.discountPct,
+});
+
+/** The kms between two stops of the route, the way its vehicles go. */
+function rideKm(twin: TwinRuntime, from: number, to: number): number {
+  const route = twin.route;
+  const L = route.polyline.length;
+  const a = route.stops[from]!.s;
+  const b = route.stops[to]!.s;
+  return (route.loop ? (((b - a) % L) + L) % L : Math.abs(b - a)) / 1000;
+}
+
+/**
+ * A fare matrix Muse read off a photo, for the driver's kind of vehicle (or
+ * the one named): checked row by row (fareMatrix.ts), and only when it fits
+ * one rule is it used, from then on for every fare in the app.
+ */
+function useFareMatrix(twin: TwinRuntime, index: number, args: Record<string, unknown>): object {
+  const v = twin.fleet.vehicles[index]!;
+  const named = String(args.vehicle ?? '').toLowerCase() as FleetKind;
+  const kind = FLEET_KINDS.includes(named) ? named : (v.kind ?? 'jeepney');
+  const rows = parseRows(args.rows);
+  const read = ruleFromMatrix(rows);
+  if (!read.rule)
+    return {
+      used: false,
+      rowsRead: read.rowsRead,
+      why: read.why,
+      checkTheseRows: read.offRows,
+      ask: 'A clearer photo of the whole matrix, straight on.',
+    };
+  const was = FARE_BY_VEHICLE[kind];
+  const rule = read.rule;
+  setFareRule(kind, rule);
+  const perRide = fareFor(AVERAGE_RIDE_KM, false, rule) - fareFor(AVERAGE_RIDE_KM, false, was);
+  return {
+    used: true,
+    vehicle: kind,
+    rowsRead: read.rowsRead,
+    rowsThatLookMisread: read.offRows,
+    was: fareSaid(was),
+    now: fareSaid(rule),
+    examples: [4, 8, 12].map((km) => ({
+      km,
+      wasPhp: fareFor(km, false, was),
+      nowPhp: fareFor(km, false, rule),
+      discountedNowPhp: fareFor(km, true, rule),
+    })),
+    aDayOfRiders: {
+      riders: RIDERS_A_DAY,
+      averageRideKm: AVERAGE_RIDE_KM,
+      moreFaresPhp: Math.round(perRide * RIDERS_A_DAY),
+    },
+    note: 'From now on every fare in the app uses it: comparing ways, the trips commuters plan and the day’s earnings. Fares already paid stay as they were.',
+    source: 'the fare matrix in the photo, read by Muse and checked row by row',
+  };
+}
+
+/**
+ * Whether this commuter was charged right: their ride on the fare matrix
+ * posted inside (read off a photo by Muse), their discount, and what they
+ * were asked to pay.
+ */
+function checkMyFare(twin: TwinRuntime, args: Record<string, unknown>): object {
+  const { commuter } = useApp.getState();
+  const rider = 'passenger' in commuter ? twin.crew.passengers.get(commuter.passenger) : undefined;
+  if (!rider) return { known: false, why: 'Which ride you are on is not known.' };
+  const rows = parseRows(args.rows);
+  const read = ruleFromMatrix(rows);
+  if (!read.rule)
+    return {
+      known: false,
+      rowsRead: read.rowsRead,
+      why: read.why,
+      checkTheseRows: read.offRows,
+      ask: 'A clearer photo of the whole matrix, straight on.',
+    };
+  const on =
+    rider.vehicleId !== null
+      ? twin.fleet.vehicles.find((x) => x.id === rider.vehicleId)
+      : undefined;
+  const kind = on?.kind ?? twin.route.kind ?? 'jeepney';
+  const km = rideKm(twin, rider.originStop, rider.destinationStop);
+  const who = rider.kind ?? 'regular';
+  const discounted = discountedKind(who);
+  const fare = fareOnMatrix(rows, read.rule, km, discounted);
+  const regular = fareOnMatrix(rows, read.rule, km, false);
+  const charged = Number(String(args.charged ?? '').replace(/[₱P,\s]/g, '')) || null;
+  return {
+    known: true,
+    from: twin.route.stops[rider.originStop]!.name,
+    to: twin.route.stops[rider.destinationStop]!.name,
+    rideKm: Math.round(km * 10) / 10,
+    vehicle: kind,
+    youAre: who,
+    yourFarePhp: fare,
+    regularFarePhp: regular,
+    discount: discounted
+      ? `${read.rule.discountPct}% off by law (student, senior or PWD): show your ID`
+      : null,
+    chargedPhp: charged,
+    overchargedPhp: charged !== null && charged > fare ? charged - fare : 0,
+    sameAsTheAppsFare: fare === fareFor(km, discounted, FARE_BY_VEHICLE[kind]),
+    source:
+      'the fare matrix in the photo, read by Muse and checked row by row; the ride from the route',
   };
 }
 
@@ -1135,6 +1350,8 @@ export function commuterTools(twin: TwinRuntime): ToolRunner {
       }
       case 'ride_down_my_street':
         return rideDownMyStreet(twin);
+      case 'check_my_fare':
+        return checkMyFare(twin, args);
       case 'does_route_pass': {
         const network = getNetwork();
         if (!network) return { answer: 'unknown', note: 'The network is still loading.' };
