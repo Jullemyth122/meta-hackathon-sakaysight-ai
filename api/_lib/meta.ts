@@ -19,7 +19,7 @@ export class MetaConfigError extends Error {}
 export class MetaEmptyReplyError extends Error {}
 
 /**
- * Muse Spark reasons before it answers, and the reasoning is billed as
+ * Muse reasons before it answers, and the reasoning is billed as
  * output. 'minimal' keeps that to ~100 tokens for these questions (the
  * numbers are already worked out by the planner); 'low' and up think for
  * hundreds of tokens and add seconds for no better answer.
@@ -32,6 +32,9 @@ const REASONING_EFFORT = process.env.META_REASONING_EFFORT ?? 'minimal';
  */
 const MAX_COMPLETION_TOKENS = Number(process.env.META_MAX_TOKENS) || 1000;
 
+/** The key only works here; META_API_BASE is for a different endpoint, if one is given. */
+export const META_BASE = process.env.META_API_BASE ?? 'https://api.meta.ai/v1';
+
 const CACHE_TTL_MS = 60_000;
 const MAX_CACHE_ENTRIES = 100;
 const responseCache = new Map<string, { text: string; expiresAt: number }>();
@@ -42,7 +45,7 @@ export function metaConfigured(): boolean {
 
 /**
  * When `META_SAVE_CREDITS=true` is set in `.env`, `/api/assist` answers using
- * the deterministic CommuteAI math/dispatch planner (`api/_lib/planner.ts`)
+ * the deterministic SakaySightAI math/dispatch planner (`api/_lib/planner.ts`)
  * without making external LLM network calls.
  */
 export function creditSaverEnabled(): boolean {
@@ -76,13 +79,59 @@ export async function chatWithCache(
   return { text, cached: false };
 }
 
+/** A message of the agent's conversation: the words, a photo, or tools asked for and answered. */
+export interface AgentMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: unknown;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+}
+
+/**
+ * One turn of the agent: Muse answers, or asks for tools. Room for the
+ * reasoning a photo takes as well as the answer.
+ */
+export async function chatWithTools(
+  messages: AgentMessage[],
+  tools: readonly object[],
+  effort: string,
+  signal?: AbortSignal,
+): Promise<{ content: string | null; tool_calls?: unknown[] }> {
+  const key = process.env.META_API_KEY;
+  const model = process.env.META_MODEL;
+  if (!key || !model) throw new MetaConfigError('META_API_KEY and META_MODEL must be set');
+  const res = await fetch(`${META_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages,
+      ...(tools.length > 0 && { tools }),
+      temperature: 0.2,
+      reasoning_effort: effort,
+      max_completion_tokens: MAX_COMPLETION_TOKENS * 2,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    console.error('Meta API error', res.status, await res.text().catch(() => ''));
+    throw new Error(`Meta API responded ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string | null; tool_calls?: unknown[] } }>;
+  };
+  const message = data.choices?.[0]?.message;
+  if (!message?.content && !message?.tool_calls?.length)
+    throw new MetaEmptyReplyError('Empty reply');
+  return { content: message.content ?? null, tool_calls: message.tool_calls };
+}
+
 export async function chat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
   const key = process.env.META_API_KEY;
   const model = process.env.META_MODEL;
-  const base = process.env.META_API_BASE ?? 'https://api.llama.com/compat/v1';
   if (!key || !model) throw new MetaConfigError('META_API_KEY and META_MODEL must be set');
 
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await fetch(`${META_BASE}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({

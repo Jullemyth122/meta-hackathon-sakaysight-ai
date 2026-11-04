@@ -6,7 +6,7 @@ const number = (v: unknown): v is number => typeof v === 'number' && Number.isFi
 const label = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 160;
 const arrivalQuestion =
   /approach|on (?:my|the|their) way|coming.*stop|arriv.*stop|reach.*stop|parating|paparating|tricycle|walking/i;
-const pickupQuestion = /jeep|seat|pickup|pick.up|sakay|sundo/i;
+const pickupQuestion = /jeep|bus|uv|van|ride|seat|pickup|pick.up|sakay|sundo/i;
 
 export function arrivalAdvice(question: string, role: unknown, input: unknown): string | null {
   if (!arrivalQuestion.test(question) && !(role === 'commuter' && pickupQuestion.test(question)))

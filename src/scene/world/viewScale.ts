@@ -20,7 +20,7 @@ import type { Vector3 } from 'three';
  * level and closer is always true scale, so jeepneys sit correctly in their
  * lanes next to real-width roads.
  */
-const TRUE_SCALE_WITHIN_M = 250;
+const TRUE_SCALE_WITHIN_M = 600;
 /** At the whole-route overview a jeepney is then ~140 m: a readable 20–30 px symbol. */
 const MAX_SCALE = 20;
 

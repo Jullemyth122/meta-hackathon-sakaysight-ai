@@ -15,11 +15,16 @@
  *                   shuffling sideways along a row; the back row first and
  *                   the far seat of each row first, so nobody climbs over
  *                   anyone already sitting
+ *
+ * Packed, the modern jeepney and the bus take riders standing in the aisle
+ * (vehicleGeometry's `standing`), from the far end first ("usog sa likod"),
+ * and only once every seat is gone. They sit as soon as a seat comes free.
  */
 
 import type { PassengerLayout } from '@/core/people/passengerSystem';
 import {
   RiderMotion,
+  standingAt,
   type CabinStyle,
   type RiderPose,
   type Seat,
@@ -27,7 +32,7 @@ import {
 } from '@/core/people/riderMotion';
 import { VEHICLES, type VehicleKind } from '@/core/vehicles/specs';
 import { footholds, WALL } from './bodyKit';
-import { vehicleGeometry } from './vehicleGeometry';
+import { BUS_AISLE_Z, vehicleGeometry } from './vehicleGeometry';
 
 /** Boarders stand this far out from the side, facing the door. */
 const OUTSIDE_M = 0.45;
@@ -53,7 +58,7 @@ const STYLE: Record<VehicleKind, Style> = {
     shuffleMps: 0.55,
     reach: 0.35,
     duck: [1, 1],
-    aisleZ: () => [0, 0],
+    aisleZ: () => [BUS_AISLE_Z, BUS_AISLE_Z],
   },
   // 1.75 m: a tall rider stoops a little.
   modern: {
@@ -112,6 +117,7 @@ export function puvLayout(kind: VehicleKind): PassengerLayout {
   if (layout) return layout;
   const S = VEHICLES[kind];
   const built = vehicleGeometry(kind);
+  const places = [...built.seats, ...built.standing];
   const halfW = S.widthM / 2;
   const style = STYLE[kind];
   const cabin: CabinStyle = {
@@ -134,18 +140,24 @@ export function puvLayout(kind: VehicleKind): PassengerLayout {
   const cab = S.doors.findIndex((d) => d.opens === 'hinged');
   // Which door each seat is reached by: on a van the seats beside the
   // driver from the cab door; on a bus in at the front, out at the middle.
-  const doorIn = (seat: number) => (cab >= 0 && built.seats[seat]!.x > 1 ? cab : 0);
+  const doorIn = (seat: number) => (cab >= 0 && places[seat]!.x > 1 ? cab : 0);
   const doorOut = (seat: number) =>
-    kind === 'bus' ? 1 : cab >= 0 && built.seats[seat]!.x > 1 ? cab : 0;
+    kind === 'bus' ? 1 : cab >= 0 && places[seat]!.x > 1 ? cab : 0;
+  const fromDoor = (k: number) => Math.abs(places[k]!.x - doors[0]!.x);
+  const standingOrder = places
+    .map((_, k) => k)
+    .slice(built.seats.length)
+    .sort((a, b) => fromDoor(b) - fromDoor(a));
   const xr = -S.lengthM / 2;
   const xf = S.lengthM / 2;
   layout = {
-    seats: built.seats,
-    seatOrder: seatOrder(kind, built.seats),
-    seated: (k, out) => seatedPose(built.seats[k]!, out),
-    board: (k, start) =>
-      RiderMotion.throughSideDoor(doors[doorIn(k)]!, cabin, built.seats[k]!, start),
-    alight: (k) => RiderMotion.outOfSideDoor(doors[doorOut(k)]!, cabin, built.seats[k]!),
+    seats: places,
+    seatOrder: [...seatOrder(kind, built.seats), ...standingOrder],
+    seated: (k, out) =>
+      places[k]!.stands ? standingAt(places[k]!, style.stoop, out) : seatedPose(places[k]!, out),
+    board: (k, start) => RiderMotion.throughSideDoor(doors[doorIn(k)]!, cabin, places[k]!, start),
+    alight: (k) => RiderMotion.outOfSideDoor(doors[doorOut(k)]!, cabin, places[k]!),
+    takeSeat: (from, k) => RiderMotion.standToSeat(doors[0]!, cabin, places[from]!, places[k]!),
     // Inside: past the door's plane, within the body's length.
     isInside: (pose) => Math.abs(pose.z) < halfW - WALL && pose.x > xr && pose.x < xf,
   };
@@ -167,5 +179,6 @@ function seatedPose(seat: Seat, out: RiderPose): RiderPose {
   out.lift = 0;
   out.liftLeg = 0;
   out.reach = 0;
+  out.hold = 0;
   return out;
 }

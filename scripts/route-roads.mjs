@@ -20,7 +20,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
-const USER_AGENT = 'CommuteAI hackathon prototype (route roads script)';
+const USER_AGENT = 'SakaySightAI hackathon prototype (route roads script)';
 /** A road further than this from the route point is a different road. */
 const MATCH_M = 15;
 /** A road segment must run within this angle of the route (either way). */

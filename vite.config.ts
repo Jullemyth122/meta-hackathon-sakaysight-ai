@@ -16,7 +16,7 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
  */
 function devApi(env: Record<string, string>): Plugin {
   return {
-    name: 'commuteai-dev-api',
+    name: 'sakaysightai-dev-api',
     apply: 'serve',
     configureServer(server) {
       for (const [key, value] of Object.entries(env)) process.env[key] ??= value;
@@ -74,6 +74,8 @@ function devApi(env: Record<string, string>): Plugin {
  * browsers only expose the Geolocation API on secure origins.
  */
 export default defineConfig(({ mode }) => ({
+  // FIREBASE_: the project's web settings, public by design (src/config.ts).
+  envPrefix: ['VITE_', 'FIREBASE_'],
   plugins: [
     react(),
     mode === 'phone' && basicSsl(),
@@ -96,7 +98,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'api/**/*.test.ts'],
     environment: 'node',
   },
 }));

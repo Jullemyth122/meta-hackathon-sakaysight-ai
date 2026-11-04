@@ -16,16 +16,17 @@
 
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
-import { Group, Mesh, MeshLambertMaterial, Vector3, type Material } from 'three';
+import { Group, Mesh, MeshLambertMaterial, Sphere, Vector3, type Material } from 'three';
 import { useApp } from '@/app/store';
 import { config } from '@/config';
+import { stationClearancePaths } from '@/core/fuel/stations';
 import { stopClearancePaths } from '@/core/people/stopLayout';
 import type { Route } from '@/core/geo/routes';
 import { FLAT_LAYERS, type MapLabel, type TileMeshes } from '@/core/map/buildTile';
 import { tileKey, tileToLngLat, type TileId } from '@/core/map/tiles';
 import { NEAR_BUDGET, NEAR_ZOOM, wantedTiles, type MapView } from '@/core/map/tileView';
 import { TileStreamer } from '@/map/tileStreamer';
-import { FLAT_ORDER, flatMapMaterial, toGeometry } from './flatLayers';
+import { FLAT_ORDER, flatMapMaterial, MAP_LAYER, toGeometry } from './flatLayers';
 
 const REFRESH_S = 0.5;
 /** Tiles kept beyond the wanted set before the farthest are dropped (no flicker panning back). */
@@ -37,11 +38,24 @@ const SLACK = 6;
 const farOrder = (order: number) => FLAT_ORDER.ground + (order - FLAT_ORDER.ground) / 10;
 /** The focused route's buildings clearance only matters this close to it (metres). */
 const CLEARANCE_MARGIN_M = 300;
+/** A detailed tile within this of the route is built again for it (metres, from its centre). */
+const REBUILD_WITHIN_M = 1700;
+/** The route looked at every this many metres, for that. */
+const REBUILD_SAMPLE_M = 250;
+/** Metres round the Earth, and how far a tile's contents reach from its centre, in tile widths. */
+const EARTH_M = 40_075_000;
+const TILE_REACH = 0.85;
+/** Lane lines show from this high down (metres): above it they are thinner than a pixel. */
+const LANE_LINES_BELOW_M = 700;
 
 interface Loaded {
   meshes: Mesh[];
+  /** Its lane lines, shown only close to the ground. */
+  lanes: Mesh | null;
   labels: MapLabel[];
   near: boolean;
+  /** Built for another route: shown until its new one replaces it. */
+  stale?: boolean;
   /** Tile centre in scene metres, for dropping the farthest first. */
   x: number;
   z: number;
@@ -78,6 +92,9 @@ export function MapTiles({
   const originKey = projection ? `${projection.origin.lat},${projection.origin.lng}` : '';
 
   useEffect(() => () => Object.values(materials).forEach((m) => m.dispose()), [materials]);
+  useEffect(() => {
+    camera.layers.enable(MAP_LAYER);
+  }, [camera]);
 
   const remove = (key: string) => {
     const entry = loaded.current.get(key);
@@ -102,25 +119,35 @@ export function MapTiles({
       projection.origin,
       (key, t: TileMeshes) => {
         const near = t.tile.z === NEAR_ZOOM;
+        remove(key); // the one it replaces, if any
         const c = projection.toLocal(tileToLngLat(t.tile.x + 0.5, t.tile.y + 0.5, t.tile.z));
         const meshes: Mesh[] = [];
+        let lanes: Mesh | null = null;
         for (const [layer, data] of Object.entries(t.layers)) {
           if (!data || (!near && layer === 'buildings')) continue;
           const material = materials[near || layer === 'buildings' ? layer : `far-${layer}`]!;
-          const mesh = new Mesh(toGeometry(data), material);
+          const reach = (EARTH_M / 2 ** t.tile.z) * TILE_REACH;
+          const mesh = new Mesh(
+            toGeometry(data, new Sphere(new Vector3(c.x, 0, c.z), reach)),
+            material,
+          );
           mesh.matrixAutoUpdate = false; // static: never re-derive its matrix
-          if (layer === 'buildings') {
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-          } else {
+          mesh.layers.set(MAP_LAYER);
+          // Buildings neither cast nor take shadows: the sun's 160 m box would
+          // draw the whole city again for them, and shadows that end at its edge.
+          if (layer !== 'buildings') {
             const order = FLAT_ORDER[layer as keyof typeof FLAT_ORDER];
             mesh.renderOrder = near ? order : farOrder(order);
             mesh.receiveShadow = near;
           }
+          if (layer === 'laneLines') {
+            lanes = mesh;
+            mesh.visible = camera.position.y < LANE_LINES_BELOW_M;
+          }
           group.add(mesh);
           meshes.push(mesh);
         }
-        all.set(key, { meshes, labels: t.labels, near, x: c.x, z: c.z });
+        all.set(key, { meshes, lanes, labels: t.labels, near, x: c.x, z: c.z });
         labelsDirty.current = true;
       },
       (key, error) => {
@@ -140,7 +167,7 @@ export function MapTiles({
   }, [originKey, group, materials, setMap, onLabels]);
 
   // A newly focused route needs its stop areas cleared of buildings: the
-  // detailed tiles near it are rebuilt.
+  // detailed tiles near it are rebuilt, each shown until its new one arrives.
   const bounds = useMemo(() => {
     let minX = Infinity;
     let maxX = -Infinity;
@@ -155,17 +182,21 @@ export function MapTiles({
     const m = CLEARANCE_MARGIN_M;
     return { minX: minX - m, maxX: maxX + m, minZ: minZ - m, maxZ: maxZ + m };
   }, [route]);
-  const clearance = useMemo(() => stopClearancePaths(route), [route]);
+  const clearance = useMemo(
+    () => [...stopClearancePaths(route), ...stationClearancePaths(route)],
+    [route],
+  );
   useEffect(() => {
-    for (const [key, entry] of [...loaded.current])
+    const line = route.polyline;
+    const along = Array.from({ length: Math.ceil(line.length / REBUILD_SAMPLE_M) }, (_, i) =>
+      line.pointAt(i * REBUILD_SAMPLE_M),
+    );
+    for (const entry of loaded.current.values())
       if (
         entry.near &&
-        entry.x > bounds.minX - 1500 &&
-        entry.x < bounds.maxX + 1500 &&
-        entry.z > bounds.minZ - 1500 &&
-        entry.z < bounds.maxZ + 1500
+        along.some((p) => Math.hypot(p.x - entry.x, p.z - entry.z) < REBUILD_WITHIN_M)
       )
-        remove(key);
+        entry.stale = true;
     since.current = Infinity;
     // Only when the route changes.
   }, [route]);
@@ -174,6 +205,8 @@ export function MapTiles({
     since.current += dt;
     if (since.current < REFRESH_S) return;
     since.current = 0;
+    const low = camera.position.y < LANE_LINES_BELOW_M;
+    for (const tile of loaded.current.values()) if (tile.lanes) tile.lanes.visible = low;
     const s = streamer.current;
     if (!s || !projection) return;
     const view = useApp.getState().view;
@@ -218,7 +251,14 @@ export function MapTiles({
         pedestrianAreas: touches ? clearance : [],
       };
     };
-    s.want([...near, ...far].filter((t) => !loaded.current.has(tileKey(t))).map(job));
+    s.want(
+      [...near, ...far]
+        .filter((t) => {
+          const have = loaded.current.get(tileKey(t));
+          return !have || have.stale;
+        })
+        .map(job),
+    );
 
     if (labelsDirty.current) {
       labelsDirty.current = false;

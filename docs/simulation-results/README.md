@@ -1,4 +1,4 @@
-# CommuteAI profit simulation results (model `roi-events-2`)
+# SakaySightAI profit simulation results (model `roi-events-2`)
 
 Seeded event simulation (`scripts/simulate-economics.mjs`, same model as the
 "Profit & service lab" tab). Every row compares the same riders, fares, traffic
@@ -42,7 +42,7 @@ little service (#3, #4: up to 1% fewer trips served) for the diesel saved.
 every day, as a terminal's line does, so no jeepney is always the one right
 behind another; each jeepney's own day (riders, trips, km, diesel, fares, net)
 is kept for the driver app. Fleet averages are unchanged within a few pesos
-(Tungko route, 20 jeepneys: ₱639 → ₱728 a day with CommuteAI; SM Tungko–SM
+(Tungko route, 20 jeepneys: ₱639 → ₱728 a day with SakaySightAI; SM Tungko–SM
 Fairview, 200 jeepneys: ₱538 → ₱588). The rows above were run with
 `roi-events-2`. Single days swing more than drivers report (no terminal
 dispatcher keeping jeepneys apart is modelled); month averages per jeepney fall
@@ -92,7 +92,7 @@ spot along the route (near the driver's home): it pulls out there between 4:30
 and 5:45 AM and, after the last trip to a terminal, drives home empty (that
 diesel counts) and parks. One day, 60 jeepneys: boundary drivers ₱660 net,
 owner-drivers ₱853 (₱17,150 and ₱22,190 over 26 working days). The lab's
-default corridor is now ₱648 → ₱701 per jeepney a day with CommuteAI.
+default corridor is now ₱648 → ₱701 per jeepney a day with SakaySightAI.
 
 **Calibration (lab and driver app defaults).** Scenario #5 is the one that
 matches what boundary drivers report (₱400–800 a day net; ₱10k–20k a month):

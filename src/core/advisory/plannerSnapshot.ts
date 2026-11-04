@@ -33,6 +33,8 @@
  */
 
 import { aheadOf, isTerminal, type Route } from '../geo/routes';
+import type { FleetKind } from '../vehicles/specs';
+import { dispatch } from './dispatch';
 import { ADVISORY, serves, type TwinState } from './model';
 import { tripRouteFor, type TripRoute, type TripBudgetInputs } from './tripBudget';
 
@@ -43,16 +45,19 @@ export interface PlannerSnapshot {
     name: string;
     source: string;
     lengthKm: number;
-    stops: Array<{ name: string; sKm: number; waiting: number }>;
+    stops: Array<{ name: string; sKm: number; waiting: number; terminal: boolean }>;
   };
   simulatedFleet: Array<{
     plate: string;
+    kind: FleetKind;
     occupancy: number;
     capacity: number;
     kmh: number;
     nextStop?: string;
     sKm: number;
     dropOffs?: Record<string, number>;
+    /** Seconds to each stop ahead, as the person's screen shows them. */
+    etaS?: Record<string, number>;
   }>;
 }
 
@@ -174,6 +179,15 @@ export function plannerRequest(state: TwinState, focus: PlannerFocus): PlannerRe
       (p) => p.phase === 'waiting' && p.originStop === stop && p.direction === direction,
     ).length;
 
+  // Not for the operator: every stop of every vehicle would not fit either.
+  const plan = focus.role === 'operator' ? null : dispatch(state);
+  const etasOf = (vehicle: number, m: number) =>
+    Object.fromEntries(
+      stops
+        .filter((x) => x.m >= m)
+        .map((x) => [labels[x.i]!, Math.round(plan!.etaS(vehicle, x.i))]),
+    );
+
   const snapshot: PlannerSnapshot = {
     tripRoute: tripRouteFor(route),
     route: {
@@ -184,12 +198,14 @@ export function plannerRequest(state: TwinState, focus: PlannerFocus): PlannerRe
         name: labels[x.i]!,
         sKm: round(x.m / 1000),
         waiting: waiting(x.i),
+        terminal: isTerminal(route, x.i),
       })),
     },
     simulatedFleet: fleet.map(({ v, m }) => {
       const next = stops.find((x) => x.m > m + 1);
       return {
         plate: v.plate,
+        kind: v.kind ?? 'jeepney',
         occupancy: v.occupancy,
         capacity: v.capacity,
         kmh: round(v.speedMps * 3.6, 1),
@@ -197,7 +213,7 @@ export function plannerRequest(state: TwinState, focus: PlannerFocus): PlannerRe
         sKm: round(m / 1000),
         // Every rider's stop for the whole fleet would not fit /api/assist's
         // size limit; for the operator the planner estimates them instead.
-        ...(focus.role !== 'operator' && { dropOffs: dropOffsOf(v.index) }),
+        ...(plan && { dropOffs: dropOffsOf(v.index), etaS: etasOf(v.index, m) }),
       };
     }),
   };

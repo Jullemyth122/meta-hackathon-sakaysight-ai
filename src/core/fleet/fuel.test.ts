@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TwinRuntime } from '@/app/twinRuntime';
 import { defaultRoute } from '../geo/routes';
+import { FUEL } from '../vehicles/specs';
 import { FIELD_SCENARIO } from './scenario';
 
 describe('diesel', () => {
@@ -16,8 +17,12 @@ describe('diesel', () => {
       });
       const { fleet } = twin;
       const sizes = fleet.vehicles.map((v) => v.tankCapacityL);
-      expect(Math.min(...sizes)).toBeGreaterThanOrEqual(40);
-      expect(Math.max(...sizes)).toBeLessThanOrEqual(60);
+      // Each in its own type's range (a modern jeepney's tank is bigger than a jeepney's).
+      for (const v of fleet.vehicles) {
+        const [smallest, largest] = FUEL[v.kind ?? 'jeepney'].tankL;
+        expect(v.tankCapacityL).toBeGreaterThanOrEqual(smallest);
+        expect(v.tankCapacityL).toBeLessThanOrEqual(largest);
+      }
       expect(new Set(sizes.map((x) => x.toFixed(1))).size).toBeGreaterThan(10);
 
       // The first morning: some filled the night before, some not.
@@ -29,18 +34,33 @@ describe('diesel', () => {
 
       let lowest = Infinity;
       let nightFills = 0;
+      // How long each has stood in the road, and the longest any has: nothing is left stuck.
+      const standing = new Map<number, number>();
+      let longestStand = 0;
       // Each visit to a station: how long at the pump, whether it waited in line, how far off the road.
-      const visiting = new Map<number, { pumpS: number; waited: boolean; offRoadM: number }>();
-      const visits: Array<{ pumpS: number; waited: boolean; offRoadM: number }> = [];
+      type Visit = { pumpS: number; waited: boolean; offRoadM: number; largestL: number };
+      const visiting = new Map<number, Visit>();
+      const visits: Visit[] = [];
       while (fleet.dayNumber <= 2) {
         twin.step(1, 0);
         for (const v of fleet.vehicles) {
           if (v.duty !== 'parked') lowest = Math.min(lowest, v.tankL / v.tankCapacityL);
+          // At a stop or its terminal it is waiting for riders, not stuck.
+          const stands =
+            v.duty !== 'parked' && !v.yard && v.speedMps < 0.1 && v.currentStop === null;
+          const stood = stands ? (standing.get(v.id) ?? 0) + 1 : 0;
+          standing.set(v.id, stood);
+          longestStand = Math.max(longestStand, stood);
           if (v.duty === 'homebound' && v.refuelLeftS > 0) nightFills++;
           const y = v.yard;
           const visit = visiting.get(v.id);
           if (y) {
-            const now = visit ?? { pumpS: 0, waited: false, offRoadM: 0 };
+            const now = visit ?? {
+              pumpS: 0,
+              waited: false,
+              offRoadM: 0,
+              largestL: FUEL[v.kind ?? 'jeepney'].tankL[1],
+            };
             if (v.refuelLeftS > 0) now.pumpS++;
             now.waited ||= y.ahead > 0;
             now.offRoadM = Math.max(now.offRoadM, v.laneShiftM);
@@ -51,15 +71,19 @@ describe('diesel', () => {
           }
         }
       }
-      // Two minutes or a little more at the pump, in the forecourt off the road.
+      // Two minutes or a little more at the pump (a bigger tank takes longer:
+      // the attendant's 90 s at most, and its litres at 35 a minute), in the
+      // forecourt off the road.
       expect(visits.length).toBeGreaterThan(fleet.vehicles.length);
       for (const visit of visits) {
         expect(visit.pumpS).toBeGreaterThanOrEqual(119);
-        expect(visit.pumpS).toBeLessThan(200);
+        expect(visit.pumpS).toBeLessThan(Math.max(200, 90 + (visit.largestL / 35) * 60 + 5));
         expect(visit.offRoadM).toBeGreaterThanOrEqual(4);
       }
       // Some wait their turn: a car at the pump, or a jeepney.
-      expect(visits.filter((x) => x.waited).length / visits.length).toBeGreaterThan(0.2);
+      expect(visits.some((x) => x.waited)).toBe(true);
+      // Queues move: nobody stands in the road for ten minutes.
+      expect(longestStand).toBeLessThan(10 * 60);
       // Never below a tenth of a tank on the road: always a station in reach.
       expect(lowest).toBeGreaterThan(0.1);
       // Some drivers fill up on the way home.

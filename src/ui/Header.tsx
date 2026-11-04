@@ -1,12 +1,16 @@
+import { onPhone } from '@/app/device';
 import { useApp, type View } from '@/app/store';
 import { ViewPerformance } from './ViewPerformance';
 
 const VIEWS: Array<{ id: View; label: string }> = [
-  { id: 'twin', label: 'Live twin' },
-  { id: 'driver', label: 'Driver app' },
-  { id: 'commuter', label: 'Commuter app' },
+  { id: 'twin', label: 'Live map' },
+  { id: 'driver', label: 'Driver' },
+  { id: 'commuter', label: 'Commuter' },
   { id: 'doorway', label: 'Sensor lab' },
 ];
+
+/** On a phone you are a commuter or a driver: the rest is the operator's. */
+const SHOWN = onPhone ? VIEWS.filter((v) => v.id === 'commuter' || v.id === 'driver') : VIEWS;
 
 /** The Profit & service lab is the operator's: opened from the live twin, and part of it. */
 const tabOf = (view: View): View => (view === 'economics' ? 'twin' : view);
@@ -25,14 +29,11 @@ export function Header() {
           <i />
           <i />
         </span>
-        <div>
-          <h1>CommuteAI</h1>
-          <span className="brand__sub">GPS-anchored jeepney digital twin</span>
-        </div>
+        <h1>SakaySightAI</h1>
       </div>
 
-      <nav className="tabs" aria-label="Views">
-        {VIEWS.map((v) => (
+      <nav className="seg" aria-label="Views">
+        {SHOWN.map((v) => (
           <button
             key={v.id}
             type="button"
@@ -47,19 +48,23 @@ export function Header() {
 
       <div className="header__status">
         <ViewPerformance />
-        <span className="chip" title="Rendering backend">
-          {backend ?? 'Starting renderer…'}
-        </span>
-        <span className="chip" title="How phone GPS reaches this screen">
-          {transport === 'firebase'
-            ? 'Firebase Realtime'
-            : transport === 'loopback'
-              ? 'Same-browser loopback'
-              : '…'}
-        </span>
-        <a className="chip chip--link" href="/track.html" target="_blank" rel="noreferrer">
-          Open phone tracker ↗
-        </a>
+        {!onPhone && (
+          <a
+            className="chip chip--link"
+            href="/track.html"
+            target="_blank"
+            rel="noreferrer"
+            title={`Share a phone's GPS with this map. Link: ${
+              transport === 'firebase'
+                ? 'Firebase Realtime'
+                : transport === 'loopback'
+                  ? 'same browser'
+                  : 'connecting'
+            }. Drawing with ${backend ?? 'starting renderer'}.`}
+          >
+            Phone tracker ↗
+          </a>
+        )}
       </div>
     </header>
   );

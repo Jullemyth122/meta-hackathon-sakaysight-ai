@@ -51,7 +51,7 @@ export function placeOnVehicle(cam: PerspectiveCamera, vehicle: Matrix4): void {
 }
 
 const ndc = new Vector3();
-const toPixels = (v: Vector3) => ({
+export const toPixels = (v: Vector3) => ({
   x: ((v.x + 1) / 2) * FRAME_W,
   y: ((1 - v.y) / 2) * FRAME_H,
 });

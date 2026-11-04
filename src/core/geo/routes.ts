@@ -20,7 +20,8 @@ import {
   type Projection,
 } from './projection';
 import { simplify } from './simplify';
-import { ROADS, ROUTE_ROAD_WIDTH_M, roadWidth } from '../map/style';
+import { LANE_M, ROADS, ROUTE_ROAD_WIDTH_M, roadWidth } from '../map/style';
+import { smoothTurns, tightSpots, type SmoothLine } from './smoothTurns';
 import defaultRouteJson from '@/data/tungko-fairview.route.json';
 
 export type RouteSource = 'synthetic' | 'osm' | 'recorded';
@@ -67,7 +68,9 @@ export interface Route {
    * route (see kerbAt). Known when the route file records its roads
    * (scripts/route-roads.mjs); otherwise the fallback road width applies.
    */
-  kerbs?: { s: number[]; m: number[] };
+  kerbs?: { s: number[]; m: number[]; room: number[]; lineUp?: number[] };
+  /** This route's own share of each kind of vehicle (core/network/fleetSize.ts). */
+  mix?: { modern: number; bus: number; uv: number };
 }
 
 /** Kerb distances are averaged over this much road, so lanes never jump. */
@@ -75,22 +78,254 @@ const KERB_SMOOTH_M = 25;
 
 /** Metres from the route line to the right-hand kerb at along-route s. */
 export function kerbAt(route: Route, s: number): number {
-  const k = route.kerbs;
-  if (!k || k.s.length === 0) return ROUTE_ROAD_WIDTH_M / 2;
-  const L = route.polyline.length;
-  const x = route.loop ? ((s % L) + L) % L : Math.max(0, Math.min(L, s));
+  return kerbFrom(route.kerbs, route.polyline.length, route.loop, s);
+}
+
+function kerbFrom(k: Route['kerbs'], L: number, loop: boolean, s: number): number {
+  return !k || k.s.length === 0 ? ROUTE_ROAD_WIDTH_M / 2 : sampled(k.s, k.m, L, loop, s);
+}
+
+/** `values` (at along-route `at`) read at along-route s. */
+function sampled(
+  at: readonly number[],
+  values: readonly number[],
+  L: number,
+  loop: boolean,
+  s: number,
+): number {
+  const x = loop ? ((s % L) + L) % L : Math.max(0, Math.min(L, s));
   // Binary search for the sample at or before x, then interpolate.
   let lo = 0;
-  let hi = k.s.length - 1;
+  let hi = at.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (k.s[mid]! <= x) lo = mid;
+    if (at[mid]! <= x) lo = mid;
     else hi = mid - 1;
   }
-  const next = Math.min(lo + 1, k.s.length - 1);
-  const span = k.s[next]! - k.s[lo]!;
-  const t = span > 0 ? (x - k.s[lo]!) / span : 0;
-  return k.m[lo]! + (k.m[next]! - k.m[lo]!) * t;
+  const next = Math.min(lo + 1, at.length - 1);
+  const span = at[next]! - at[lo]!;
+  const t = span > 0 ? (x - at[lo]!) / span : 0;
+  return values[lo]! + (values[next]! - values[lo]!) * t;
+}
+
+/**
+ * How much of its offset from the line a vehicle keeps at s, 0–1: all of it,
+ * but for where the line doubles back (see hairpins).
+ */
+export function lineUpAt(route: Route, s: number): number {
+  const k = route.kerbs;
+  if (!k?.lineUp) return 1;
+  return sampled(k.s, k.lineUp, route.polyline.length, route.loop, s);
+}
+
+/** The lane a vehicle keeps to, in from the kerb (its centre, metres). */
+export const KERB_LANE_M = 1.75;
+/** Room to spread with no road data: from the kerb lane to the line, not over it. */
+const UNKNOWN_ROAD_ROOM_M = ROUTE_ROAD_WIDTH_M / 2 - KERB_LANE_M;
+
+/**
+ * Metres of road beyond the kerb lane going this way at s, for vehicles to
+ * spread into. A route that does not know its road (kerbs unknown) keeps to
+ * its side of the line.
+ */
+export function laneRoomAt(route: Route, s: number): number {
+  const k = route.kerbs;
+  if (!k) return UNKNOWN_ROAD_ROOM_M;
+  return sampled(k.s, k.room, route.polyline.length, route.loop, s);
+}
+/**
+ * How far either side a corner is rounded, given how far out the road's kerb
+ * is: no more than the road has room for. A vehicle turning a street corner
+ * stays on the street; rounded any wider, it cuts across the block, through
+ * whatever is built there. Its lane round the bend is the drive line's to keep.
+ */
+const turnReachM = (kerbM: number) => Math.max(MIN_TURN_REACH_M, kerbM * TURN_REACH_PER_KERB);
+const MIN_TURN_REACH_M = 10;
+const TURN_REACH_PER_KERB = 1.8;
+/** A turn still tighter than this after rounding is rounded again, a little more (metres of radius). */
+const TIGHT_TURN_M = 8;
+const TIGHT_TURN_REACH = 2;
+/** Road either side of a tight turn that the harder smoothing covers (metres). */
+const TIGHT_TURN_SPAN_M = 45;
+
+/** Around a loop's seam, kerbs ease to one value over this much road either side. */
+const SEAM_EASE_M = 40;
+
+/** A loop's kerbs, meeting where its end joins its start. */
+function closeKerbs(k: NonNullable<Route['kerbs']>, L: number): NonNullable<Route['kerbs']> {
+  const meet = (values: readonly number[]) => {
+    const first = values[0]!;
+    const last = values[values.length - 1]!;
+    const seam = (first + last) / 2;
+    return values.map((v, i) => {
+      const s = k.s[i]!;
+      const fromStart = Math.max(0, 1 - s / SEAM_EASE_M);
+      const fromEnd = Math.max(0, 1 - (L - s) / SEAM_EASE_M);
+      return v + (seam - first) * fromStart + (seam - last) * fromEnd;
+    });
+  };
+  return { s: k.s, m: meet(k.m), room: meet(k.room) };
+}
+
+/** A route's line with its corners rounded, and its kerbs carried over to the new line. */
+export function smoothRoute(
+  line: Polyline,
+  loop: boolean,
+  kerbs: Route['kerbs'],
+): SmoothLine & { kerbs: Route['kerbs'] } {
+  const reach = (s: number) => turnReachM(kerbFrom(kerbs, line.length, loop, s));
+  let smooth = smoothTurns(line, loop, reach);
+  // What is left is the road really doubling back: give those stretches more room.
+  const tight = tightSpots(smooth.polyline, TIGHT_TURN_M);
+  if (tight.length > 0) {
+    const scale = line.length / smooth.polyline.length;
+    // In steps of the span: each tight spot marks its own step and those either side.
+    const near = new Uint8Array(Math.ceil(line.length / TIGHT_TURN_SPAN_M) + 3);
+    for (const s of tight) {
+      const step = Math.floor((s * scale) / TIGHT_TURN_SPAN_M) + 1;
+      near[step - 1] = near[step] = near[step + 1] = 1;
+    }
+    smooth = smoothTurns(line, loop, (s) =>
+      near[Math.floor(s / TIGHT_TURN_SPAN_M) + 1] ? reach(s) * TIGHT_TURN_REACH : reach(s),
+    );
+  }
+  const moved = kerbs && { ...kerbs, s: kerbs.s.map(smooth.toSmooth) };
+  return {
+    ...smooth,
+    kerbs:
+      moved &&
+      hairpins(
+        smooth.polyline,
+        loop,
+        gentleRoom(
+          loop
+            ? clearOfOncoming(smooth.polyline, closeKerbs(moved, smooth.polyline.length))
+            : moved,
+        ),
+      ),
+  };
+}
+
+/** Looking this far either way along the road for how much it turns (metres). */
+const TURN_SPAN_M = 18;
+/** Up to this turn (radians) a vehicle keeps its lane; by the second it is on the line. */
+const KEEPS_LANE_RAD = 1.75;
+const ON_THE_LINE_RAD = 2.6;
+
+/**
+ * Where the line doubles back (a terminal on a wide road), a vehicle set off
+ * to one side of it would swing right across to the other in the few metres
+ * the line takes to reverse: a sideways jump of twice the offset. So through
+ * a hairpin vehicles close in on the line, and out again after it.
+ */
+function hairpins(
+  line: Polyline,
+  loop: boolean,
+  kerbs: NonNullable<Route['kerbs']>,
+): NonNullable<Route['kerbs']> {
+  const L = line.length;
+  const at = (s: number) => (loop ? ((s % L) + L) % L : Math.max(0, Math.min(L, s)));
+  const lineUp = kerbs.s.map((s) => {
+    const before = line.headingAt(at(s - TURN_SPAN_M), 6);
+    const after = line.headingAt(at(s + TURN_SPAN_M), 6);
+    const turn = Math.abs(Math.atan2(Math.sin(after - before), Math.cos(after - before)));
+    const t = Math.max(
+      0,
+      Math.min(1, (turn - KEEPS_LANE_RAD) / (ON_THE_LINE_RAD - KEEPS_LANE_RAD)),
+    );
+    return 1 - t * t * (3 - 2 * t);
+  });
+  return lineUp.every((u) => u === 1) ? kerbs : { ...kerbs, lineUp };
+}
+
+/** Room to spread narrows or widens no faster than this (metres across per metre along). */
+const ROOM_CHANGE_PER_M = 0.08;
+
+/**
+ * A lane that ends must end gradually. Where the room dropped from one
+ * stretch to the next, a vehicle in the lane was moved across at once: it
+ * looked like a teleport. Only ever narrows the room, so it stays safe.
+ */
+function gentleRoom(kerbs: NonNullable<Route['kerbs']>): NonNullable<Route['kerbs']> {
+  const room = [...kerbs.room];
+  const reach = (i: number, from: number) =>
+    room[from]! + Math.abs(kerbs.s[i]! - kerbs.s[from]!) * ROOM_CHANGE_PER_M;
+  for (let i = 1; i < room.length; i++) room[i] = Math.min(room[i]!, reach(i, i - 1));
+  for (let i = room.length - 2; i >= 0; i--) room[i] = Math.min(room[i]!, reach(i, i + 1));
+  return { ...kerbs, room };
+}
+
+/** The road's line looked at every this many metres, for the oncoming side. */
+const ONCOMING_STEP_M = 15;
+/** The other way along a loop counts within this much of the line (metres)… */
+const ONCOMING_WITHIN_M = 32;
+/** …unless it is this close along the route: only a bend, not the way back. */
+const ONCOMING_NOT_WITHIN_S_M = 120;
+/** A lane's centre stays this far from the middle between the two ways (metres). */
+const OFF_THE_MIDDLE_M = 1.9;
+
+/**
+ * A loop runs along many roads both ways, and a road's tagged width says
+ * nothing of how far apart its two ways lie on the map. Spread by that width
+ * alone, the inner lanes of the two ways meet head on. So each stretch's room
+ * is cut to the middle between it and its own way back, measured on the line.
+ */
+function clearOfOncoming(
+  line: Polyline,
+  kerbs: NonNullable<Route['kerbs']>,
+): NonNullable<Route['kerbs']> {
+  const L = line.length;
+  const count = Math.ceil(L / ONCOMING_STEP_M);
+  const xs = new Float64Array(count);
+  const zs = new Float64Array(count);
+  const hs = new Float64Array(count);
+  const cells = new Map<number, number[]>();
+  const size = ONCOMING_WITHIN_M;
+  const cellOf = (cx: number, cz: number) => cx * 100_003 + cz;
+  for (let i = 0; i < count; i++) {
+    const s = (i * L) / count;
+    const p = line.pointAt(s);
+    xs[i] = p.x;
+    zs[i] = p.z;
+    hs[i] = line.headingAt(s, ONCOMING_STEP_M);
+    const key = cellOf(Math.round(p.x / size), Math.round(p.z / size));
+    const here = cells.get(key);
+    if (here) here.push(i);
+    else cells.set(key, [i]);
+  }
+  // How far left of the line each stretch may go.
+  const leftRoom = new Float64Array(count).fill(Infinity);
+  const apart = Math.floor(ONCOMING_NOT_WITHIN_S_M / ONCOMING_STEP_M);
+  for (let i = 0; i < count; i++) {
+    const c = Math.cos(hs[i]!);
+    const n = Math.sin(hs[i]!);
+    const cx = Math.round(xs[i]! / size);
+    const cz = Math.round(zs[i]! / size);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dz = -1; dz <= 1; dz++)
+        for (const j of cells.get(cellOf(cx + dx, cz + dz)) ?? []) {
+          const along = Math.abs(i - j);
+          if (Math.min(along, count - along) < apart) continue;
+          if (Math.cos(hs[i]! - hs[j]!) > -0.7) continue; // the same way, or a crossing
+          const x = xs[j]! - xs[i]!;
+          const z = zs[j]! - zs[i]!;
+          if (x * x + z * z > ONCOMING_WITHIN_M * ONCOMING_WITHIN_M) continue;
+          // Right of the way of travel is (sin h, cos h): negative is to its left.
+          const left = -(x * n + z * c);
+          leftRoom[i] = Math.min(leftRoom[i]!, left / 2 - OFF_THE_MIDDLE_M);
+        }
+  }
+  // A kerb sample holds for the road out to the samples either side of it.
+  const room = kerbs.room.map((r, i) => {
+    const from = Math.floor((kerbs.s[Math.max(0, i - 1)]! / L) * count);
+    const to = Math.ceil((kerbs.s[Math.min(kerbs.s.length - 1, i + 1)]! / L) * count);
+    let left = Infinity;
+    for (let n = from; n <= to && n < count; n++) left = Math.min(left, leftRoom[n]!);
+    if (left === Infinity) return r;
+    const cruise = Math.max(0, kerbs.m[i]! - KERB_LANE_M);
+    return Math.max(0, Math.min(r, cruise + left));
+  });
+  return { ...kerbs, room };
 }
 
 /**
@@ -101,20 +336,29 @@ export function kerbAt(route: Route, s: number): number {
 function kerbProfile(polyline: Polyline, roads: ReadonlyArray<[number, string, number]>) {
   const pts = polyline.points;
   const s = [...polyline.cumulative];
-  const raw = pts.map((_, i) => {
+  // Half the road's width; and how much of it is lanes going this way past
+  // the kerb lane: a one-way carriageway's whole width, a two-way road's half.
+  const kerb: number[] = [];
+  const room: number[] = [];
+  pts.forEach((_, i) => {
     let r = roads[0]!;
     for (const stretch of roads) if (stretch[0] <= i) r = stretch;
     const style = ROADS[r[1]] ?? ROADS.minor!;
-    return roadWidth(style, r[2] === 1) / 2;
+    const oneway = r[2] === 1;
+    const width = roadWidth(style, oneway);
+    kerb.push(width / 2);
+    room.push(Math.max(0, (oneway ? width : width / 2) - LANE_M));
   });
-  const m = raw.map((_, i) => {
-    let sum = 0;
-    let n = 0;
-    for (let j = i; j >= 0 && s[i]! - s[j]! <= KERB_SMOOTH_M; j--, n++) sum += raw[j]!;
-    for (let j = i + 1; j < pts.length && s[j]! - s[i]! <= KERB_SMOOTH_M; j++, n++) sum += raw[j]!;
-    return sum / n;
-  });
-  return { s, m };
+  const eased = (raw: readonly number[]) =>
+    raw.map((_, i) => {
+      let sum = 0;
+      let n = 0;
+      for (let j = i; j >= 0 && s[i]! - s[j]! <= KERB_SMOOTH_M; j--, n++) sum += raw[j]!;
+      for (let j = i + 1; j < pts.length && s[j]! - s[i]! <= KERB_SMOOTH_M; j++, n++)
+        sum += raw[j]!;
+      return sum / n;
+    });
+  return { s, m: eased(kerb), room: eased(room) };
 }
 
 /**
@@ -344,6 +588,10 @@ export function parseGeoJsonRoute(geojson: unknown, fallbackName: string): Route
   // One road stretch per file point; a closing point added above repeats the first.
   if (Array.isArray(props.roads) && props.roads.length > 0)
     route.kerbs = kerbProfile(route.polyline, props.roads);
+  // Corners into curves, before anything is placed along the line.
+  const smooth = smoothRoute(route.polyline, loop, route.kerbs);
+  route.polyline = smooth.polyline;
+  if (smooth.kerbs) route.kerbs = smooth.kerbs;
 
   const points = (kind: string) =>
     features

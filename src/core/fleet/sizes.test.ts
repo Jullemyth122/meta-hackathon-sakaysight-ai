@@ -25,7 +25,7 @@ describe('a mixed fleet (jeepneys, modern jeepneys, UV Express, buses)', () => {
             const y = on[b]!;
             if (x.direction !== y.direction && !route.loop) continue;
             const along = Math.min(aheadOf(route, x.s, y.s), aheadOf(route, y.s, x.s));
-            const across = Math.abs(x.laneShiftM - y.laneShiftM);
+            const across = Math.abs(fleet.acrossOf(x) - fleet.acrossOf(y));
             if (
               along < (length(x.kind) + length(y.kind)) / 2 - 0.3 &&
               across < (width(x.kind) + width(y.kind)) / 2 - 0.1

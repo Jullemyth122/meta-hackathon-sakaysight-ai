@@ -30,13 +30,19 @@ describe('arrival times', () => {
           return { v, stop, eta: plan.etaS(v.id, stop), start: fleet.timeOfDay, took: NaN };
         });
       for (let t = 0; t < 2 * 3600 && watched.some((w) => Number.isNaN(w.took)); t++) {
+        const next = watched.map((w) => w.v.nextStop);
         twin.step(1, 0);
-        for (const w of watched)
-          if (Number.isNaN(w.took) && w.v.currentStop === w.stop)
+        // There: stopped at it, or gone past it (nobody to set down or pick up).
+        watched.forEach((w, k) => {
+          const passed = next[k] === w.stop && w.v.nextStop !== w.stop;
+          if (Number.isNaN(w.took) && (w.v.currentStop === w.stop || passed))
             w.took = fleet.timeOfDay - w.start;
+        });
       }
       const done = watched.filter((w) => !Number.isNaN(w.took));
-      const ratio = done.reduce((a, w) => a + w.eta / w.took, 0) / done.length;
+      // All of them together: in an average of each one's ratio, a short trip
+      // (a jeepney with nobody to stop for) would weigh as much as a long one.
+      const ratio = done.reduce((a, w) => a + w.eta, 0) / done.reduce((a, w) => a + w.took, 0);
       console.log(
         `ETA / real, ${done.length} jeepneys: ${ratio.toFixed(2)}; e.g. ` +
           done
@@ -45,7 +51,7 @@ describe('arrival times', () => {
             .join(', '),
       );
       expect(done.length).toBeGreaterThan(5);
-      // Within a fifth of the real time, on average.
+      // Within a fifth of the real time, all together.
       expect(ratio).toBeGreaterThan(0.8);
       expect(ratio).toBeLessThan(1.2);
     },

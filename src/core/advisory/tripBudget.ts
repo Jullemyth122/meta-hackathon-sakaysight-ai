@@ -1,3 +1,5 @@
+import { FUEL, type FleetKind } from '../vehicles/specs';
+
 /** Whole route geometry, never the driver's moving three-stop horizon. */
 export interface TripRoute {
   name: string;
@@ -46,11 +48,15 @@ export interface TripBudgetInputs {
   otherCostsPhp: number;
 }
 
-export function defaultBudgetInputs(dieselPhpPerL: number): TripBudgetInputs {
+/** The defaults for a `kind` (its own diesel: a bus 2.5 km a litre, a jeepney 6). */
+export function defaultBudgetInputs(
+  dieselPhpPerL: number,
+  kind: FleetKind = 'jeepney',
+): TripBudgetInputs {
   return {
-    movingKmPerL: 6,
+    movingKmPerL: FUEL[kind].kmPerL,
     dieselPhpPerL,
-    idleLPerHour: 0.8,
+    idleLPerHour: FUEL[kind].idleLPerH,
     startLitresPerStop: 0.02,
     dwellSecondsPerStop: 30,
     trafficIdleMinutesPerLeg: 10,

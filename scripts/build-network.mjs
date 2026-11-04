@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const OSRM = 'https://router.project-osrm.org/route/v1/driving';
-const USER_AGENT = 'CommuteAI-network-build/1.0 (hackathon prototype)';
+const USER_AGENT = 'SakaySightAI-network-build/1.0 (hackathon prototype)';
 /** Waypoints per OSRM request; longer routes go in overlapping chunks. */
 const CHUNK = 80;
 const REQUEST_GAP_MS = 1100;

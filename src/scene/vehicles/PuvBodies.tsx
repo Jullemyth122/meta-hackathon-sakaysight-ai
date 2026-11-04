@@ -7,7 +7,7 @@
  * Symbol-scaled with the view like the jeepneys; clickable.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Box3,
   Matrix4,
@@ -22,9 +22,8 @@ import { useApp } from '@/app/store';
 import { VEHICLES, type VehicleKind } from '@/core/vehicles/specs';
 import type { GroundPose } from '../jeepney/JeepneyInstances';
 import { useScaledPose } from '../world/viewScale';
-import type { Slot } from './bodyKit';
 import { vehicleGeometry } from './vehicleGeometry';
-import { vehicleMaterial } from './vehicleMaterials';
+import { drawnParts } from './vehicleMaterials';
 
 /** Collapses an instance to nothing: how a vehicle not shown, or a shut door, is "drawn". */
 const NOWHERE = new Matrix4().makeScale(0, 0, 0);
@@ -48,21 +47,32 @@ export interface PuvCrew {
 interface Props {
   kind: VehicleKind;
   count: number;
+  /** Slots to keep, so a new count builds nothing again (default: `count`). */
+  capacity?: number;
   poseAt(k: number, out: GroundPose): void;
   stateAt(k: number, out: PuvState): void;
   onSelect?: (k: number, part: 'front' | 'body') => void;
   crew?: PuvCrew;
   castShadow?: boolean;
+  /** The layer to draw on, when not every camera should see them. */
+  layer?: number;
 }
+
+/** The front wheels turn at most this far either way (radians): full lock, about 35 degrees. */
+const MAX_ROAD_WHEEL = (35 * Math.PI) / 180;
+/** They come round to a bend over about this much road (metres). */
+const STEER_EASE_M = 2;
 
 export function PuvBodies({
   kind,
   count,
+  capacity = count,
   poseAt,
   stateAt,
   onSelect,
   crew,
   castShadow = true,
+  layer,
 }: Props) {
   const built = vehicleGeometry(kind);
   const S = VEHICLES[kind];
@@ -94,6 +104,11 @@ export function PuvBodies({
       obj: new Object3D(),
       wheel: new Matrix4(),
       roll: new Matrix4(),
+      steer: new Matrix4(),
+      back: new Matrix4(),
+      /** Each one's last pose, and how far its front wheels are steered (radians, + = right). */
+      prev: [] as Array<{ x: number; z: number; heading: number } | undefined>,
+      steers: [] as number[],
     }),
     [],
   );
@@ -105,9 +120,20 @@ export function PuvBodies({
     [],
   );
 
+  useLayoutEffect(() => {
+    for (const m of Object.values(meshes.current)) {
+      if (!m) continue;
+      m.count = count;
+      m.visible = count > 0; // none of this kind on the route: nothing to go through
+    }
+  }, [count, capacity]);
+
   useScaledPose((k) => {
     const { pose, state, obj, wheel, roll } = scratch;
     const all = Object.entries(meshes.current);
+    let anyShown = false;
+    let anyOpen = false;
+    let anyShut = false;
     crew?.begin();
     for (let j = 0; j < count; j++) {
       stateAt(j, state);
@@ -116,6 +142,9 @@ export function PuvBodies({
         matrices.current[j] = null;
         continue;
       }
+      anyShown = true;
+      if (state.open) anyOpen = true;
+      else anyShut = true;
       poseAt(j, pose);
       obj.position.set(pose.x, 0, pose.z);
       obj.rotation.set(0, pose.heading, 0);
@@ -124,12 +153,43 @@ export function PuvBodies({
       (matrices.current[j] ??= new Matrix4()).copy(obj.matrix);
       // Rolled forward about each axle (nose-down: a negative angle).
       roll.makeRotationZ(-state.spin);
+      // The front wheels steered into the bend it is driving: the bicycle model,
+      // atan(wheelbase × turn per metre), easing over a couple of metres, no
+      // further than full lock; standing still, they stay as they are.
+      const last = scratch.prev[j];
+      let steer = scratch.steers[j] ?? 0;
+      if (last) {
+        const moved = Math.hypot(pose.x - last.x, pose.z - last.z);
+        if (moved > 0.01 && moved < 15) {
+          const dh = Math.atan2(
+            Math.sin(pose.heading - last.heading),
+            Math.cos(pose.heading - last.heading),
+          );
+          // Headings turn the wrong way for steering: + heading = turning left.
+          const target = Math.max(
+            -MAX_ROAD_WHEEL,
+            Math.min(MAX_ROAD_WHEEL, Math.atan((S.wheelbaseM * -dh) / moved)),
+          );
+          steer += (target - steer) * Math.min(1, moved / STEER_EASE_M);
+        }
+      }
+      scratch.prev[j] = { x: pose.x, z: pose.z, heading: pose.heading };
+      scratch.steers[j] = steer;
+      scratch.steer.makeRotationY(-steer);
       for (const [key, m] of all) {
         if (!m) continue;
         const set = key.split(':')[0]!;
         if (set.startsWith('axle')) {
           const a = built.axles[Number(set.slice(4))]!;
-          wheel.makeTranslation(a.x, a.y, 0).multiply(roll).premultiply(obj.matrix);
+          if (a.steers) {
+            // About its own upright: out to it, steered, back, then rolled.
+            wheel
+              .makeTranslation(a.x, a.y, a.z!)
+              .multiply(scratch.steer)
+              .multiply(scratch.back.makeTranslation(0, 0, -a.z!))
+              .multiply(roll)
+              .premultiply(obj.matrix);
+          } else wheel.makeTranslation(a.x, a.y, 0).multiply(roll).premultiply(obj.matrix);
           m.setMatrixAt(j, wheel);
           continue;
         }
@@ -139,7 +199,17 @@ export function PuvBodies({
       crew?.vehicle(j, obj.matrix, k);
     }
     crew?.end();
-    for (const [, m] of all) if (m) m.instanceMatrix.needsUpdate = true;
+    for (const [key, m] of all) {
+      if (!m) continue;
+      // Nothing of this set to draw: not a draw call in every pass.
+      const set = key.split(':')[0]!;
+      m.visible = set === 'open' ? anyOpen : set === 'closed' ? anyShut : anyShown;
+      if (m.count === 0) continue;
+      // Only those drawn, not every slot kept.
+      m.instanceMatrix.clearUpdateRanges();
+      m.instanceMatrix.addUpdateRange(0, m.count * 16);
+      m.instanceMatrix.needsUpdate = true;
+    }
   });
 
   const raycast = useMemo(() => {
@@ -191,13 +261,14 @@ export function PuvBodies({
         />
       )}
       {sets.flatMap(([set, parts]) =>
-        (Object.keys(parts) as Slot[]).map((slot) => (
+        drawnParts(kind, parts).map(({ slot, geometry, material }) => (
           <instancedMesh
-            key={`${set}:${slot}:${count}`}
+            key={`${set}:${slot}:${capacity}`}
             ref={(m) => {
               meshes.current[`${set}:${slot}`] = m;
+              if (m && layer !== undefined) m.layers.set(layer);
             }}
-            args={[parts[slot], vehicleMaterial(kind, slot), count]}
+            args={[geometry, material, capacity]}
             castShadow={castShadow && slot !== 'glass'}
             receiveShadow
             frustumCulled={false}

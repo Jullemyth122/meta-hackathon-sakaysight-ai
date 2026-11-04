@@ -4,6 +4,7 @@
     ".write": false,
     "sessions": {
       ".read": "auth != null",
+      ".indexOn": ["area"],
       "$sessionId": {
         ".write": "auth != null && $sessionId.matches(/^[A-Za-z0-9_-]{1,64}$/)",
         ".validate": "newData.hasChildren(['meta', 'fix', 'trip'])",
@@ -15,6 +16,9 @@
         },
         "trip": {
           ".validate": "newData.val() === 'WAITING' || newData.val() === 'POSSIBLE_VEHICLE' || newData.val() === 'CONFIRMED' || newData.val() === 'ENDED'"
+        },
+        "area": {
+          ".validate": "newData.isString() && newData.val().matches(/^[vp]:-?[0-9]{1,5}_-?[0-9]{1,5}$/)"
         }
       }
     },

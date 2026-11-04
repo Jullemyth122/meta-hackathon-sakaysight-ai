@@ -135,10 +135,18 @@ export function calibrate(
   const cal = { ...ONES };
   const total = cells.reduce((a, c) => a + c.weight, 0);
   if (total <= 0) return cal;
+  // The same hour and kind of stop gives the same mix, however many stops.
+  const together = new Map<string, { weight: number; hour: number; school: boolean }>();
+  for (const c of cells) {
+    const key = `${c.hour}:${c.school}`;
+    const same = together.get(key);
+    if (same) same.weight += c.weight;
+    else together.set(key, { ...c });
+  }
   for (let round = 0; round < 50; round++) {
     const avg = { ...ONES };
     for (const k of RIDER_KINDS) avg[k] = 0;
-    for (const c of cells) {
+    for (const c of together.values()) {
       const mix = mixAt(base, { hour: c.hour, day: 0, school: c.school }, cal, null);
       for (const k of RIDER_KINDS) avg[k] += (c.weight * mix[k]) / total;
     }

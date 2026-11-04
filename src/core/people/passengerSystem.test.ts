@@ -6,6 +6,7 @@ import { PassengerSystem } from './passengerSystem';
 import { newRiderPose } from './riderMotion';
 import { waitingSpot } from './stopLayout';
 import { JEEPNEY_PASSENGER_LAYOUT } from '@/scene/jeepney/crewState';
+import { puvLayout } from '@/scene/vehicles/puvCrew';
 import { fleetPose } from '@/scene/world/lanes';
 
 const route: Route = {
@@ -199,7 +200,8 @@ describe('persistent passenger journeys', () => {
     }
     expect(v.direction).toBe(-1);
     expect(v.occupancy).toBe(0);
-    expect([...crew.passengers.values()]).toHaveLength(3);
+    // Off, and on their way: a finished trip leaves the twin, counted as delivered.
+    expect(crew.passengers.size + crew.delivered).toBe(3);
   });
 
   it('never pulls away while someone is still walking along the outside to the step', () => {
@@ -293,8 +295,8 @@ describe('persistent passenger journeys', () => {
     fleet.waiting.fill(0);
     const [a, b] = fleet.vehicles as [FleetVehicle, FleetVehicle];
     Object.assign(a, { s: 99, nextStop: 1, occupancy: 0, direction: 1, speedMps: 1 });
-    // B is full, and everyone on it rides to C: nothing for it at B.
-    Object.assign(b, { s: 40, nextStop: 1, occupancy: 22, direction: 1, speedMps: 7 });
+    // B is packed, and everyone on it rides to C: nothing for it at B.
+    Object.assign(b, { s: 40, nextStop: 1, occupancy: 24, direction: 1, speedMps: 7 });
     const layout = JEEPNEY_PASSENGER_LAYOUT;
     const crew = new PassengerSystem(fleet, [layout, layout], (i, out) => fleetPose(fleet, i, out));
     for (const r of crew.passengers.values()) if (r.vehicleId === 1) r.destinationStop = 2;
@@ -354,6 +356,173 @@ describe('persistent passenger journeys', () => {
     }
     expect(stopped).toBe(false);
     expect(v.s).toBeGreaterThan(105);
+  });
+
+  describe('packed: the sabit on a jeepney, standing on a modern jeepney', () => {
+    /** One `kind` at stop B with `onboard` going on to C and `waiting` at the stop for C. */
+    function packed(kind: 'jeepney' | 'modern', onboard: number, waiting: number) {
+      const fleet = new FleetSim(route, { ...DEFAULT_FLEET, count: 1, demandPerStopPerMin: 0 });
+      const v = fleet.vehicles[0]!;
+      Object.assign(v, { s: 90, nextStop: 1, occupancy: onboard, direction: 1, kind });
+      fleet.waiting.fill(0);
+      const layout = kind === 'jeepney' ? JEEPNEY_PASSENGER_LAYOUT : puvLayout(kind);
+      const crew = new PassengerSystem(fleet, [layout], (i, out) => fleetPose(fleet, i, out));
+      // Packing, everyone a seat's worth: a pregnant rider's room is tested on its own.
+      for (const r of crew.passengers.values()) {
+        r.destinationStop = 2;
+        r.kind = 'regular';
+        r.room = null;
+        layout.seated(r.seat!, r.pose);
+      }
+      crew.demand(1, waiting, true);
+      for (const r of crew.passengers.values())
+        if (r.phase === 'waiting') {
+          r.kind = 'regular';
+          r.direction = 1;
+          r.destinationStop = 2;
+          r.spot = waitingSpot(route, 1, 1, r.id, []);
+          Object.assign(r.pose, r.spot);
+        }
+      const serve = () => {
+        Object.assign(v, { s: 100, speedMps: 0, dwellS: 3, currentStop: 1 });
+        crew.arrive(v, 1);
+        for (let i = 0; i < 6000 && crew.busy(0); i++) {
+          fleet.step(0.1);
+          crew.update(0.1);
+        }
+        // The last on have got their hands to the rail, and anyone moving is in their seat.
+        for (let i = 0; i < 100; i++) crew.update(0.1);
+      };
+      return { fleet, v, crew, layout, serve };
+    }
+    const placesTaken = (crew: PassengerSystem, stands: boolean) =>
+      [...crew.passengers.values()].filter(
+        (r) => r.vehicleId === 0 && !!crew.layouts[0]!.seats[r.seat!]!.stands === stands,
+      ).length;
+
+    it('a jeepney takes two more on the back step once its benches are full, and no more', () => {
+      const { v, crew, fleet, serve } = packed('jeepney', 20, 10);
+      expect(v.capacity).toBe(24);
+      expect(v.seats).toBe(22);
+      serve();
+      expect(v.occupancy).toBe(24);
+      expect(placesTaken(crew, false)).toBe(22);
+      expect(placesTaken(crew, true)).toBe(2);
+      expect(fleet.waiting[1]).toBe(6);
+      // Those on the step count as on board, and hold on where they stand.
+      const hanging = [...crew.passengers.values()].filter(
+        (r) => r.vehicleId === 0 && r.seat! >= 22,
+      );
+      for (const r of hanging) {
+        expect(r.inside).toBe(true);
+        expect(r.phase).toBe('seated');
+        expect(r.pose.hold).toBe(1);
+        expect(r.pose.sit).toBe(0);
+        expect(r.pose.x).toBeLessThan(-3.1);
+      }
+    });
+
+    it('a pregnant rider gets on with the seat beside her kept empty: one place fewer', () => {
+      const { v, crew, fleet, serve } = packed('jeepney', 20, 10);
+      const her = [...crew.passengers.values()].find((r) => r.phase === 'waiting')!;
+      her.kind = 'pregnant';
+      serve();
+      expect(her.vehicleId).toBe(0);
+      expect(her.room).not.toBeNull();
+      const layout = crew.layouts[0]!;
+      const [seat, room] = [layout.seats[her.seat!]!, layout.seats[her.room!]!];
+      // On a bench, beside her, and nobody in it.
+      expect(seat.stands).toBeFalsy();
+      expect(room.stands).toBeFalsy();
+      expect(room.yaw).toBe(seat.yaw);
+      expect(Math.abs(room.x - seat.x)).toBeLessThan(1);
+      const aboard = [...crew.passengers.values()].filter((r) => r.vehicleId === 0);
+      expect(aboard.some((r) => r.seat === her.room)).toBe(false);
+      // Packed: 23 riders in the 24 places, her empty seat the 24th.
+      expect(v.capacity).toBe(23);
+      expect(v.occupancy).toBe(23);
+      expect(fleet.waiting[1]).toBe(7);
+      // She sits between her seat and the one kept.
+      const a = layout.seated(her.seat!, newRiderPose());
+      const b = layout.seated(her.room!, newRiderPose());
+      expect(Math.hypot(her.pose.x - (a.x + b.x) / 2, her.pose.z - (a.z + b.z) / 2)).toBeLessThan(
+        0.01,
+      );
+    });
+
+    it('nobody hangs on while a bench seat is free', () => {
+      const { crew, serve } = packed('jeepney', 5, 10);
+      serve();
+      expect(placesTaken(crew, true)).toBe(0);
+    });
+
+    it('a modern jeepney takes 10 standing once its seats are gone, and no more', () => {
+      const { v, crew, fleet, serve } = packed('modern', 20, 15);
+      expect(v.capacity).toBe(32);
+      expect(v.seats).toBe(22);
+      serve();
+      expect(v.occupancy).toBe(32);
+      expect(placesTaken(crew, true)).toBe(10);
+      expect(fleet.waiting[1]).toBe(3);
+    });
+
+    it.each(['jeepney', 'modern'] as const)(
+      '%s: someone standing takes a seat as soon as one comes free',
+      (kind) => {
+        const { v, crew, serve } = packed(kind, 20, 15);
+        serve();
+        const standers = () =>
+          [...crew.passengers.values()].filter(
+            (r) => r.vehicleId === 0 && crew.layouts[0]!.seats[r.seat!]!.stands,
+          );
+        const before = standers().length;
+        // Three get off at the next stop; nobody is waiting there now.
+        const seated = [...crew.passengers.values()].filter(
+          (r) => r.vehicleId === 0 && !crew.layouts[0]!.seats[r.seat!]!.stands,
+        );
+        for (const r of seated.slice(0, 3)) r.destinationStop = 1;
+        crew.fleet.waiting.fill(0);
+        for (const r of [...crew.passengers.values()]) if (r.phase === 'waiting') crew.cancel(r.id);
+        serve();
+        expect(standers().length).toBe(Math.max(0, before - 3));
+        expect(v.occupancy).toBe(before + 22 - 3);
+        // Nobody shares a place, and each sits exactly in theirs.
+        const aboard = [...crew.passengers.values()].filter((r) => r.vehicleId === 0);
+        expect(new Set(aboard.map((r) => r.seat)).size).toBe(aboard.length);
+        const pose = newRiderPose();
+        for (const r of aboard) {
+          expect(r.motion).toBeNull();
+          crew.layouts[0]!.seated(r.seat!, pose);
+          expect(Math.hypot(r.pose.x - pose.x, r.pose.z - pose.z)).toBeLessThan(0.01);
+        }
+      },
+    );
+
+    it('at the terminal, drivers fill their seats, not the standing room', () => {
+      const { v, crew } = packed('modern', 0, 0);
+      // Coming in along the line: it turns round at the terminal and loads to go back out.
+      Object.assign(v, {
+        s: 0,
+        nextStop: 0,
+        speedMps: 0,
+        dwellS: 3,
+        currentStop: 0,
+        direction: -1,
+      });
+      Object.assign(v, { duty: 'service' });
+      crew.demand(0, 18, true); // over 80% of the 22 seats, under 80% of 32
+      for (const r of crew.passengers.values())
+        if (r.phase === 'waiting') {
+          r.direction = 1;
+          r.destinationStop = 2;
+          r.spot = waitingSpot(route, 0, 1, r.id, []);
+          Object.assign(r.pose, r.spot);
+        }
+      crew.arrive(v, 0);
+      for (let i = 0; i < 1200 && crew.busy(0); i++) crew.update(0.1); // 120 s, well short of patience
+      expect(crew.busy(0)).toBe(false);
+      expect(v.occupancy).toBe(18);
+    });
   });
 
   it('uses the supplied capacity for a larger vehicle instead of assuming 22 seats', () => {

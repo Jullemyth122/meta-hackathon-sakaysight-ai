@@ -8,13 +8,21 @@
  * same plates, at the same time of day, so nothing jumps.
  */
 
-import { OWNER_SHARE, type SimulationScenario } from '@/core/fleet/scenario';
+import { mixTotal, OWNER_SHARE, pickFleet, type SimulationScenario } from '@/core/fleet/scenario';
 import { aheadOf, type Route } from '@/core/geo/routes';
 import { FARE_BY_VEHICLE, fareFor } from '@/core/fare';
 import { setStationData } from '@/core/fuel/stations';
-import type { TripLeg } from './store';
-import { buildNetwork, type Network, type NetworkFile } from '@/core/network/network';
+import { useApp, type TripLeg } from './store';
+import {
+  networkOf,
+  networkRoute,
+  shownRoutes,
+  type Network,
+  type NetworkFile,
+} from '@/core/network/network';
+import { fleetPlan } from '@/core/network/fleetSize';
 import { RouteFlow, ridersPerDay } from '@/core/network/flow';
+import { roadShares } from '@/core/network/roadLoad';
 import type { ArrivalsAt } from '@/core/network/plan';
 import { landmarks, placesOf, withAliases, type Place } from '@/core/network/search';
 import { dispatch, type Dispatch } from '@/core/advisory/dispatch';
@@ -27,6 +35,14 @@ const PLACES_URL = '/data/metro-manila-places.json';
 const FUEL_URL = '/data/metro-manila-fuel.json';
 /** The twin answers for arrivals within this many seconds of now; later ones come from the flow. */
 const LIVE_WITHIN_S = 120;
+/** Building the network's routes: this much of the main thread at a time (ms)… */
+const BUILD_SLICE_MS = 8;
+/** …and this much behind the loading screen, where no frame is being watched. */
+const HIDDEN_SLICE_MS = 120;
+/** Of the time that takes, the share that is routes; the rest is their flows. */
+const ROUTES_SHARE = 0.85;
+/** The most of a route's vehicles the twin takes over from its flow. */
+export const MAX_SIMULATED = 120;
 
 let network: Network | null = null;
 let placesLoading: Promise<Place[]> | null = null;
@@ -35,17 +51,47 @@ const flows: RouteFlow[] = [];
 
 export const getNetwork = (): Network | null => network;
 
+const sliceMs = () => (useApp.getState().started ? BUILD_SLICE_MS : HIDDEN_SLICE_MS);
+
 /** Load the network once; `first` (the bundled route) leads it and sets the projection. */
-export function loadNetwork(first: Route): Promise<Network> {
+export function loadNetwork(first: Route, progress?: (share: number) => void): Promise<Network> {
   if (network) return Promise.resolve(network);
   loading ??= fetch(NETWORK_URL)
     .then((res) => {
       if (!res.ok) throw new Error(`Network data: HTTP ${res.status}`);
       return res.json() as Promise<NetworkFile>;
     })
-    .then((file) => {
-      if (!first.projection) throw new Error('The first route has no map projection');
-      network = buildNetwork(file, first.projection, first);
+    .then(async (file) => {
+      const projection = first.projection;
+      if (!projection) throw new Error('The first route has no map projection');
+      // A few at a time, between frames: all at once would stop the view for seconds.
+      const routes = [];
+      let startedAt = performance.now();
+      const shown = shownRoutes(file);
+      for (const meta of shown) {
+        routes.push({ meta, route: networkRoute(meta, projection, !file.spursRemoved) });
+        if (performance.now() - startedAt < sliceMs()) continue;
+        progress?.((ROUTES_SHARE * routes.length) / shown.length);
+        await new Promise((resume) => setTimeout(resume));
+        startedAt = performance.now();
+      }
+      network = networkOf(file, routes, first);
+      // The real fleet shared out by where people are, not one figure for every route.
+      const roads = network.routes.map((r) => ({ route: r.route, roads: r.meta.roads }));
+      fleetPlan(roads, projection).forEach((plan, i) => {
+        const { route, meta } = network!.routes[i]!;
+        meta.fleet = plan.fleet;
+        route.mix = plan.mix;
+      });
+      // Tens of thousands of vehicles: their flows a few at a time too.
+      startedAt = performance.now();
+      for (let i = 0; i < network.routes.length; i++) {
+        flowOf(i);
+        if (performance.now() - startedAt < sliceMs()) continue;
+        progress?.(ROUTES_SHARE + ((1 - ROUTES_SHARE) * i) / network.routes.length);
+        await new Promise((resume) => setTimeout(resume));
+        startedAt = performance.now();
+      }
       return network;
     })
     .catch((err: unknown) => {
@@ -59,7 +105,23 @@ export function loadNetwork(first: Route): Promise<Network> {
 export function flowOf(i: number): RouteFlow {
   const n = network;
   if (!n) throw new Error('Network not loaded');
-  return (flows[i] ??= new RouteFlow(n.routes[i]!.route, n.routes[i]!.meta.headwayS));
+  const { route, meta } = n.routes[i]!;
+  return (flows[i] ??= new RouteFlow(route, meta.headwayS, meta.fleet));
+}
+
+let shares: Float32Array | null = null;
+
+/** The share of route i's fleet its roads have room to show (core/network/roadLoad.ts). */
+export function roadShareOf(i: number): number {
+  const n = network;
+  if (!n) return 1;
+  shares ??= roadShares(
+    n.routes.map(({ route, meta }) => ({
+      route,
+      vehicles: meta.fleet ?? flows[n.routes.findIndex((r) => r.route === route)]?.count ?? 20,
+    })),
+  );
+  return shares[i] ?? 1;
 }
 
 /** Index of a route in the network by id, or -1. */
@@ -67,32 +129,48 @@ export function routeIndex(id: string): number {
   return network?.routes.findIndex((r) => r.route.id === id) ?? -1;
 }
 
-/** What focusing route i starts the twin with, at the twin's current clock. */
+/**
+ * What focusing route i starts the twin with, at the twin's current clock.
+ * `clicked`: a vehicle of its flow that has to be in the twin, the same one in
+ * the same place; `clickedAt` says which it is there.
+ */
 export function focusRoute(
   i: number,
   twin: TwinRuntime,
-): { route: Route; scenario: SimulationScenario; start: FleetStart[] } {
+  clicked?: number,
+): { route: Route; scenario: SimulationScenario; start: FleetStart[]; clickedAt: number } {
   const n = network;
   if (!n) throw new Error('Network not loaded');
   const flow = flowOf(i);
+  // A route's whole fleet can be hundreds: as many as can be simulated one by one.
+  // The fleet chosen by hand goes with you from route to route.
+  const mix = twin.scenario?.mix;
+  const vehicles = mix ? mixTotal(mix) : Math.min(flow.count, MAX_SIMULATED);
   const clock = twin.clockS;
   const hour = Math.floor(clock / 3600) % 24;
+  const chosen = pickFleet(flow.vehicles(clock), vehicles, mix, clicked);
   return {
     route: n.routes[i]!.route,
+    clickedAt: Math.max(
+      0,
+      chosen.findIndex((v) => v.index === clicked),
+    ),
     scenario: {
-      vehicles: flow.count,
-      dailyTrips: ridersPerDay(n.routes[i]!.route, flow.count),
+      vehicles,
+      ...(mix ? { mix } : {}),
+      dailyTrips: ridersPerDay(n.routes[i]!.route, vehicles),
       startHour: hour,
       startOffsetS: Math.floor(clock % 3600),
       profile: 'commute',
       seed: twin.scenario?.seed ?? 11,
       ownerShare: OWNER_SHARE,
     },
-    start: flow.vehicles(clock).map((v) => ({
+    start: chosen.map((v) => ({
       s: v.s,
       occupancy: v.occupancy,
       plate: v.plate,
       inService: v.inService,
+      kind: v.kind,
     })),
   };
 }

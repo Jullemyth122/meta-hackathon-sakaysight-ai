@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SCENARIO, expectedArrivals, normalizeScenario } from './scenario';
 import { TwinRuntime } from '@/app/twinRuntime';
 import { syntheticDemoRoute } from '../geo/routes';
@@ -34,6 +34,9 @@ describe('single-route demand scenarios', () => {
 
   it('keeps the same simulation result across display frame rates and acceleration', () => {
     const scenario = { ...DEFAULT_SCENARIO, dailyTrips: 8000, vehicles: 30 };
+    // A frame's real-time budget guards the app's frame rate. On a slow machine
+    // it would cut frames short, which is not what is compared here.
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
     const run = (frames: number, dt: number, speed: number) => {
       const twin = new TwinRuntime(syntheticDemoRoute(), undefined, scenario);
       for (let i = 0; i < frames; i++) twin.advance(dt, i * dt * 1000, speed);
@@ -47,6 +50,7 @@ describe('single-route demand scenarios', () => {
     const baseline = run(600, 1 / 60, 1);
     expect(run(300, 1 / 30, 1)).toEqual(baseline);
     expect(run(60, 1 / 60, 10)).toEqual(baseline);
+    clock.mockRestore();
   });
 
   it(

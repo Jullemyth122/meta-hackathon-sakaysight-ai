@@ -27,7 +27,8 @@ export function IncomingCommuters() {
     view === 'driver' ? { view, vehicle } : view === 'commuter' ? { view, query } : { view };
   const data = incomingMapData(state, audience).slice(0, 24);
   const people = new Map(state.passengers.map((p) => [p.id, p]));
-  const labels: SceneLabel[] = data.map((entry) => {
+  // A commuter wants their own way, not how busy each stop is.
+  const labels: SceneLabel[] = (view === 'commuter' ? [] : data).map((entry) => {
     const at = areaCentre(state.route, entry.stop, entry.direction);
     return {
       ...at,
@@ -51,6 +52,25 @@ export function IncomingCommuters() {
       kind: 'incoming-rider',
       text: `${view === 'commuter' ? 'You · ' : ''}${arrival.mode === 'tricycle' ? 'Tricycle' : 'Walking'} · ${Math.round(arrival.distanceM)} m · ${approachTime(arrival.etaS)}`,
     });
+  }
+  // The driver sees who is waving them down by the road, away from any stop:
+  // one label for each group standing together, by the road or a side street.
+  if (view === 'driver') {
+    const groups = new Map<number, { x: number; z: number; n: number; street: boolean }>();
+    for (const p of state.passengers) {
+      if (p.flagS === undefined || p.phase !== 'waiting') continue;
+      const g = groups.get(p.flagS);
+      if (g) g.n++;
+      else groups.set(p.flagS, { x: p.x, z: p.z, n: 1, street: !!p.byStreet });
+    }
+    for (const g of groups.values())
+      labels.push({
+        x: g.x,
+        y: 3,
+        z: g.z,
+        kind: 'incoming-rider',
+        text: `${g.n === 1 ? 'Waiting' : `${g.n} waiting`} ${g.street ? 'on the side street' : 'by the road'}`,
+      });
   }
   // The operator also sees tricycles bringing people from further out than the stops' 500 m.
   if (view === 'twin') {

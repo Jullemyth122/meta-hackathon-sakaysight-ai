@@ -24,9 +24,9 @@ import { corridorFromRoute, economicCorridor } from '@/core/economics/routes';
 import { download } from './download';
 
 const names: Record<Mode, string> = {
-  baseline: 'No CommuteAI',
-  planner: 'CommuteAI',
-  muse: 'CommuteAI + Muse AI',
+  baseline: 'No SakaySightAI',
+  planner: 'SakaySightAI, rules only',
+  muse: 'SakaySightAI + Muse AI',
 };
 const php = (n: number) =>
   n.toLocaleString('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2 });
@@ -73,7 +73,7 @@ const fieldLabels: Partial<Record<NumericKey, string>> = {
   fillShare: 'Advice: leave once this share of seats is taken (0–1)',
   maxHoldSeconds: 'Advice: longest wait for riders at a quiet terminal (seconds)',
   holdStepSeconds: 'Advice: re-check the terminal queue every (seconds)',
-  plannerAdoption: 'Planner advice adoption (0–1)',
+  plannerAdoption: 'Rules-only advice adoption (0–1)',
   museAdoption: 'Muse advice adoption (0–1)',
   boundaryPhp: 'Boundary / vehicle-day (PHP)',
   ownerShare: 'Share of owner-drivers, no boundary (0–1)',
@@ -208,7 +208,7 @@ type Stats = ReturnType<typeof summarize>;
 
 /**
  * The month in one table, for a presentation: where each peso comes from
- * and goes, with and without CommuteAI, for one jeepney (the fleet's
+ * and goes, with and without SakaySightAI, for one jeepney (the fleet's
  * average) or the whole fleet, then the time and the service it buys.
  */
 function MonthReport({ result, stats }: { result: RunResult; stats: Stats }) {
@@ -233,11 +233,11 @@ function MonthReport({ result, stats }: { result: RunResult; stats: Stats }) {
     { label: '− Boundary paid to owners', value: (s) => php(month(s, s.boundaryPhp)) },
     { label: '− Owner-drivers’ own upkeep', value: (s) => php(month(s, s.upkeepPhp)) },
     { label: '− Other daily costs', value: (s) => php(month(s, s.otherPhp)) },
-    { label: '− CommuteAI phone data, hardware, server', value: (s) => php(month(s, s.appPhp)) },
+    { label: '− SakaySightAI phone data, hardware, server', value: (s) => php(month(s, s.appPhp)) },
     { label: '− Muse AI questions (text + voice)', value: (s) => php(month(s, s.aiPhp)) },
     { label: '= Net profit', value: (s) => php(month(s, s.profitPhp)), strong: true },
     {
-      label: 'Change vs no CommuteAI',
+      label: 'Change vs no SakaySightAI',
       value: (s) => php(month(s, s.profitPhp) - month(base, base.profitPhp)),
       strong: true,
     },
@@ -327,10 +327,11 @@ function MonthReport({ result, stats }: { result: RunResult; stats: Stats }) {
         {Math.round(result.config.ownerShare * 100)}% of the fleet here) pays none but ₱
         {result.config.ownerUpkeepPhp} of their own upkeep. Everyone pays ₱
         {result.config.otherDailyPhp} other costs a day. Net = fares − diesel − boundary or upkeep −
-        other − CommuteAI − Muse. CommuteAI does not create riders: it saves diesel, by leaving a
-        busy terminal at once, waiting for riders at a quiet one instead of driving near-empty, and
-        skipping stops nobody needs. Every simulated day has its own random riders (when and where
-        they turn up), so no two days are alike; the month is {result.config.days} such days
+        other − SakaySightAI − Muse. SakaySightAI does not create riders: it saves diesel, by
+        leaving a busy terminal at once, waiting for riders at a quiet one instead of driving
+        near-empty, and skipping stops nobody needs. Every simulated day has its own random riders
+        (when and where they turn up), so no two days are alike; the month is {result.config.days}{' '}
+        such days
         {result.config.repetitions > 1 ? `, averaged over ${result.config.repetitions} runs` : ''}.
       </p>
     </div>
@@ -497,7 +498,7 @@ export function EconomicsLab() {
                 <button
                   className="btn"
                   onClick={() =>
-                    download('commuteai-roi-ledger.csv', ledgerCsv(result), 'text/csv')
+                    download('sakaysightai-roi-ledger.csv', ledgerCsv(result), 'text/csv')
                   }
                 >
                   Export daily ledger CSV
@@ -506,7 +507,7 @@ export function EconomicsLab() {
                   className="btn"
                   onClick={() =>
                     download(
-                      'commuteai-roi-audit.json',
+                      'sakaysightai-roi-audit.json',
                       JSON.stringify(result, null, 2),
                       'application/json',
                     )
@@ -668,7 +669,7 @@ export function EconomicsLab() {
                 daily={stats.map((s) => ({ mode: s.mode, perJeepney: s.dailyPerVehicle }))}
               />
               <p>
-                <strong>Muse versus planner:</strong>{' '}
+                <strong>Muse versus rules only:</strong>{' '}
                 {php((muse.dailyPerVehicle - planner.dailyPerVehicle) * MONTH_DAYS)} per jeepney per
                 month.{' '}
                 {result.config.museAdoption === result.config.plannerAdoption

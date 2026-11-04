@@ -67,5 +67,6 @@ export function incomingMapData(state: TwinState, audience: IncomingMapAudience)
 
 /** Arrival at a stop is never 'now' while someone is still approaching. */
 export function approachTime(seconds: number): string {
-  return seconds < 60 ? `${Math.max(1, Math.ceil(seconds))} s` : `${Math.ceil(seconds / 60)} min`;
+  // Seconds while they count; whole minutes, the nearest, after that (65 s is not "2 min").
+  return seconds < 100 ? `${Math.max(1, Math.ceil(seconds))} s` : `${Math.round(seconds / 60)} min`;
 }

@@ -14,11 +14,14 @@
  */
 
 import { isTerminal } from '../geo/routes';
+import { stopsByTheRoad, type FleetKind } from '../vehicles/specs';
 import type { Dispatch } from './dispatch';
 import { incomingAtStop, type IncomingPassenger } from './approach';
 import {
   ADVISORY,
+  carries,
   distanceTo,
+  litresPerKm,
   serves,
   type PassengerState,
   type TwinState,
@@ -52,8 +55,11 @@ export interface StopAhead {
 
 export interface DriverView {
   plate: string;
+  kind: FleetKind;
   seats: { onBoard: number; capacity: number; free: number };
   ahead: StopAhead[];
+  /** People waiting by the road ahead, not at a stop, nearest first: wave and they board. */
+  roadside: Array<{ passenger: number; distanceM: number; etaS: number; canTake: boolean }>;
   leader: { plate: string; distanceM: number; freeSeats: number } | null;
   eyesight: Array<{ passenger: number; distanceM: number; behind: boolean; phase: string }>;
   fuel: {
@@ -90,12 +96,19 @@ export function driverView(state: TwinState, vehicle: number, plan: Dispatch): D
 
   const queueAt = (stop: number) =>
     passengers.filter(
-      (p) => p.phase === 'waiting' && p.originStop === stop && serves(route, v, p.direction),
+      (p) =>
+        p.phase === 'waiting' &&
+        p.flagS === undefined &&
+        p.originStop === stop &&
+        serves(route, v, p.direction),
     ).length;
+  const byTheRoad = new Set(passengers.filter((p) => p.flagS !== undefined).map((p) => p.id));
 
   const decisions = toTerminal.map(({ stop, st, d }, i): StopAhead => {
     const waiting = queueAt(stop);
-    const incoming = incomingAtStop(state, stop, v.direction);
+    const incoming = incomingAtStop(state, stop, v.direction).filter(
+      (p) => !byTheRoad.has(p.passenger),
+    );
     const etaS = plan.etaS(vehicle, stop);
     const forYou = plan.claimedAt(vehicle, stop);
     const dropOffs = onBoard.filter((p) => p.destinationStop === stop).length;
@@ -140,6 +153,28 @@ export function driverView(state: TwinState, vehicle: number, plan: Dispatch): D
     (x, i) => i === 0 || (i < ADVISORY.horizonStops && x.distanceM <= ADVISORY.horizonM),
   );
 
+  const roadside = passengers
+    .filter(
+      (p) =>
+        p.flagS !== undefined &&
+        p.phase === 'waiting' &&
+        stopsByTheRoad(v.kind ?? 'jeepney') &&
+        serves(route, v, p.direction) &&
+        carries(route, v, p.originStop, p.destinationStop),
+    )
+    .map((p) => ({ p, d: distanceTo(route, v, p.flagS!) }))
+    .filter(
+      ({ p, d }) =>
+        d >= 0 && d <= ADVISORY.horizonM && d <= distanceTo(route, v, route.stops[p.originStop]!.s),
+    )
+    .sort((a, b) => a.d - b.d)
+    .map(({ p, d }) => ({
+      passenger: p.id,
+      distanceM: d,
+      etaS: d / Math.max(v.paceMps ?? 0, 1),
+      canTake: onBoard.length < v.capacity,
+    }));
+
   // The jeepney directly in front, going the same way, within sight: on a
   // loop the one right behind is "ahead" by almost a lap, which is not ahead.
   const sight = Math.min(ADVISORY.horizonM, toTerminal[toTerminal.length - 1]?.d ?? 0);
@@ -176,7 +211,7 @@ export function driverView(state: TwinState, vehicle: number, plan: Dispatch): D
   // Fuel to the next terminal: driving plus one stop-and-go per stop made.
   const f = ADVISORY.fuel;
   const km = (toTerminal[toTerminal.length - 1]?.d ?? 0) / 1000;
-  const cruise = km * (f.baseLPerKm + f.perRiderLPerKm * v.occupancy);
+  const cruise = km * litresPerKm(v.kind, v.occupancy);
   const stopsPlanned = decisions.filter((x) => x.action === 'stop').length;
   const stopsAll = decisions.length;
   const litres = cruise + stopsPlanned * f.stopGoL;
@@ -185,12 +220,14 @@ export function driverView(state: TwinState, vehicle: number, plan: Dispatch): D
 
   return {
     plate: v.plate,
+    kind: v.kind ?? 'jeepney',
     seats: {
       onBoard: v.occupancy,
       capacity: v.capacity,
       free: Math.max(0, v.capacity - v.occupancy),
     },
     ahead,
+    roadside,
     leader,
     eyesight,
     fuel: {

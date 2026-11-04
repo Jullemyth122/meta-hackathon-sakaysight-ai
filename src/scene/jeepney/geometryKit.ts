@@ -10,9 +10,11 @@ import {
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
+  Color,
   CylinderGeometry,
   ExtrudeGeometry,
   Shape,
+  type MeshStandardMaterial,
 } from 'three';
 
 export type Axis = 'x' | 'y' | 'z';
@@ -144,4 +146,37 @@ export function mergeParts(parts: BufferGeometry[]): BufferGeometry | null {
   merged.setAttribute('normal', new BufferAttribute(normals, 3));
   merged.computeBoundingSphere();
   return merged;
+}
+
+/**
+ * Merge parts that differ only in colour into one geometry with those colours
+ * baked in, so they cost one draw call together. Every extra mesh is drawn,
+ * and prepared by the renderer, again in each pass (screen, shadow, cabin
+ * camera), which is what limits the frame rate here, not the triangles.
+ */
+export function bakeColours(
+  parts: ReadonlyArray<readonly [BufferGeometry, Color]>,
+): BufferGeometry {
+  const vertices = parts.reduce((n, [g]) => n + g.attributes.position!.count, 0);
+  const position = new Float32Array(vertices * 3);
+  const normal = new Float32Array(vertices * 3);
+  const colour = new Float32Array(vertices * 3);
+  let at = 0;
+  for (const [g, c] of parts) {
+    const count = g.attributes.position!.count;
+    position.set(g.attributes.position!.array as Float32Array, at * 3);
+    normal.set(g.attributes.normal!.array as Float32Array, at * 3);
+    for (let n = 0; n < count; n++, at++) c.toArray(colour, at * 3);
+  }
+  const baked = new BufferGeometry();
+  baked.setAttribute('position', new BufferAttribute(position, 3));
+  baked.setAttribute('normal', new BufferAttribute(normal, 3));
+  baked.setAttribute('color', new BufferAttribute(colour, 3));
+  baked.computeBoundingSphere();
+  return baked;
+}
+
+/** What a material looks like baked into vertex colours: its colour plus its glow. */
+export function bakedColour(m: MeshStandardMaterial): Color {
+  return m.color.clone().add(m.emissive.clone().multiplyScalar(m.emissiveIntensity));
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProjection, haversineM } from '../geo/projection';
 import { MeshBuilder, type MeshData } from './meshBuilder';
-import { roadWidth, ROADS } from './style';
+import { laneLines, roadWidth, ROADS } from './style';
 import { lngLatToTile, tilesAround, tilesInBounds, tileToLngLat, tileToLocal } from './tiles';
 
 const FAIRVIEW = { lat: 14.7335, lng: 121.0584 };
@@ -147,13 +147,15 @@ describe('road widths', () => {
     const primary = ROADS.primary!;
     expect(roadWidth(primary, true)).toBeLessThan(roadWidth(primary, false));
     // Minor roads have no carriageway width: one-way or not, same street.
-    expect(roadWidth(ROADS.minor!, true)).toBe(roadWidth(ROADS.minor!, false));
+    // A small one-way street is narrower than the same street both ways.
+    expect(roadWidth(ROADS.tertiary!, true)).toBeLessThan(roadWidth(ROADS.tertiary!, false));
+    expect(roadWidth(ROADS.minor!, true)).toBeLessThan(roadWidth(ROADS.minor!, false));
   });
 
   it('ranks road classes from widest to narrowest', () => {
     const order = [
-      'motorway',
       'trunk',
+      'motorway',
       'primary',
       'secondary',
       'tertiary',
@@ -163,5 +165,17 @@ describe('road widths', () => {
     ];
     const widths = order.map((c) => ROADS[c]!.width);
     expect([...widths].sort((a, b) => b - a)).toEqual(widths);
+  });
+
+  it('paints what a road is: two ways down the middle, one way without', () => {
+    expect(laneLines('tertiary', false)).toEqual([{ offset: 0, solid: true }]);
+    expect(laneLines('tertiary', true)).toEqual([]);
+    expect(laneLines('minor', false)).toEqual([]);
+    // Most roads: four columns, two each way.
+    expect(laneLines('secondary', false)).toHaveLength(3);
+    // Divided: three lanes a side, two lines between them, none down the middle.
+    const divided = laneLines('primary', true);
+    expect(divided).toHaveLength(2);
+    expect(divided.every((l) => !l.solid)).toBe(true);
   });
 });

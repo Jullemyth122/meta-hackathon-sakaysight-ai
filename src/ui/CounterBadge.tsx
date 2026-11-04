@@ -29,7 +29,7 @@ export function CounterBadge({ label, value, note, tone = 'neutral' }: Props) {
       }
       gsap.fromTo(
         '.counter__value',
-        { scale: 1.25, color: 'var(--accent)' },
+        { scale: 1.25, color: 'var(--accent-ink)' },
         { scale: 1, color: 'var(--fg)', duration: 0.6, ease: 'power3.out' },
       );
       gsap.fromTo(

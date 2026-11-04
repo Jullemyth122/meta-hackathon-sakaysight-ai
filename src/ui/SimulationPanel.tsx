@@ -2,16 +2,57 @@ import { useState } from 'react';
 import { useRuntimes } from '@/app/runtimeContext';
 import { useApp } from '@/app/store';
 import { MAX_DAYS } from '@/app/twinRuntime';
-import { normalizeScenario, SCENARIOS, type SimulationScenario } from '@/core/fleet/scenario';
+import {
+  FLEET_KINDS,
+  MAX_SCENARIO_TRIPS,
+  MAX_SCENARIO_VEHICLES,
+  mixTotal,
+  normalizeScenario,
+  RIDERS_PER_JEEPNEY_PER_DAY,
+  SCENARIOS,
+  type FleetMix,
+  type SimulationScenario,
+} from '@/core/fleet/scenario';
+import { fleetKinds, type FleetKind } from '@/core/vehicles/specs';
+import { Fold } from './Tabs';
 import { useTicker } from './useTicker';
+
+const KIND_NAMES: Record<FleetKind, string> = {
+  jeepney: 'Jeepneys',
+  modern: 'Modern jeepneys',
+  uv: 'UV Express',
+  bus: 'Buses',
+};
+
+const TRAFFIC_SHARES = [
+  [1, 'All of it'],
+  [0.5, 'Half'],
+  [0.25, 'A quarter'],
+  [0.1, 'A tenth'],
+  [0, 'None'],
+] as const;
 
 export function SimulationPanel() {
   useTicker(2);
   const { twin } = useRuntimes();
   const active = useApp((s) => s.scenario);
   const apply = useApp((s) => s.setScenario);
+  const trafficShare = useApp((s) => s.trafficShare);
+  const setTrafficShare = useApp((s) => s.setTrafficShare);
   const [draft, setDraft] = useState<SimulationScenario>(active);
-  const change = (key: 'vehicles' | 'dailyTrips' | 'startHour' | 'seed', value: string) =>
+  // Until one is chosen by hand, the route's usual mix for that many vehicles.
+  const shownMix: FleetMix =
+    draft.mix ??
+    fleetKinds(draft.vehicles, twin.route.kind, twin.route.mix).reduce(
+      (mix, kind) => ({ ...mix, [kind]: mix[kind] + 1 }),
+      { jeepney: 0, modern: 0, uv: 0, bus: 0 },
+    );
+  const setKind = (kind: FleetKind, value: string) => {
+    const mix = { ...shownMix, [kind]: Math.max(0, Math.round(Number(value) || 0)) };
+    const vehicles = mixTotal(mix);
+    setDraft({ ...draft, mix, vehicles, dailyTrips: vehicles * RIDERS_PER_JEEPNEY_PER_DAY });
+  };
+  const change = (key: 'dailyTrips' | 'startHour' | 'seed', value: string) =>
     // A start hour typed in starts on the hour (the presets may start at 4:30).
     setDraft({ ...draft, [key]: Number(value), ...(key === 'startHour' && { startOffsetS: 0 }) });
   const clock = Math.floor(twin.fleet.timeOfDay);
@@ -31,10 +72,11 @@ export function SimulationPanel() {
   );
   return (
     <section className="section simulation-panel" aria-label="Simulation scenario">
-      <h3 className="section__title">Single-route simulation</h3>
+      <h3 className="section__title">Run a scenario</h3>
       <p className="fine">
-        Test demand and fleet capacity on {twin.route.name}. Presets are synthetic assumptions, not
-        measured traffic.
+        These numbers are for the route you are on, {twin.route.name}. A fleet you choose goes with
+        you to every route you open. Up to {MAX_SCENARIO_VEHICLES} vehicles and{' '}
+        {MAX_SCENARIO_TRIPS.toLocaleString()} trips; fewer vehicles run faster.
       </p>
       <div className="row">
         {SCENARIOS.map((p) => (
@@ -44,22 +86,24 @@ export function SimulationPanel() {
         ))}
       </div>
       <div className="simulation-fields">
-        <label>
-          Jeepneys
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={draft.vehicles}
-            onChange={(e) => change('vehicles', e.target.value)}
-          />
-        </label>
-        <label>
+        {FLEET_KINDS.map((kind) => (
+          <label key={kind}>
+            {KIND_NAMES[kind]}
+            <input
+              type="number"
+              min={0}
+              max={MAX_SCENARIO_VEHICLES}
+              value={shownMix[kind]}
+              onChange={(e) => setKind(kind, e.target.value)}
+            />
+          </label>
+        ))}
+        <label className="simulation-fields__wide">
           Expected trips / day
           <input
             type="number"
             min={0}
-            max={120000}
+            max={MAX_SCENARIO_TRIPS}
             step={1000}
             value={draft.dailyTrips}
             onChange={(e) => change('dailyTrips', e.target.value)}
@@ -98,6 +142,7 @@ export function SimulationPanel() {
           />
         </label>
       </div>
+      <p className="fine">{mixTotal(shownMix)} vehicles in all.</p>
       <button
         className="btn btn--primary"
         onClick={() => {
@@ -108,12 +153,19 @@ export function SimulationPanel() {
       >
         Start / restart scenario
       </button>
-      <small className="fine">
-        Restarts simulated trips and metrics. Arrivals follow the time of day, terminals draw three
-        times an ordinary stop, and the first five minutes of riders are already waiting. Presets
-        are sized to the 10–15 riders on board seen on Metro Manila jeepneys.
-      </small>
-      <p className="fine">Speed, pause and skipping nights: under the map, bottom left.</p>
+      <div className="simulation-fields">
+        <label className="simulation-fields__wide">
+          Traffic on other routes
+          <select value={trafficShare} onChange={(e) => setTrafficShare(Number(e.target.value))}>
+            {TRAFFIC_SHARES.map(([share, name]) => (
+              <option key={share} value={share}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <h3 className="section__title">Results so far</h3>
       <div className="kv">
         <span>Simulation clock</span>
         <span className="mono">
@@ -123,7 +175,7 @@ export function SimulationPanel() {
         </span>
         <span>Active scenario</span>
         <span>
-          {twin.fleet.vehicles.length} jeepneys · {active.dailyTrips.toLocaleString()} trips/day
+          {twin.fleet.vehicles.length} vehicles · {active.dailyTrips.toLocaleString()} trips/day
         </span>
         <span>New arrivals</span>
         <span>{twin.fleet.generatedDemand}</span>
@@ -148,10 +200,18 @@ export function SimulationPanel() {
           {onboard} / {seats} ({seats ? Math.round((onboard / seats) * 100) : 0}%)
         </span>
       </div>
-      <small className="fine">
-        Queues are not capped. Average wait covers boarded passengers; longest wait shows people
-        still waiting. Live GPS stays on real time.
-      </small>
+      <Fold title="How this works">
+        <p className="fine">
+          Presets are synthetic assumptions, not measured traffic, sized to the 10–15 riders on
+          board seen on Metro Manila jeepneys. Starting restarts trips and results. Arrivals follow
+          the time of day, terminals draw three times an ordinary stop, and the first five minutes
+          of riders are already waiting.
+        </p>
+        <p className="fine">
+          Queues are not capped. Average wait covers boarded passengers; longest wait shows people
+          still waiting. Live GPS stays on real time. Speed and pause are on the map, bottom left.
+        </p>
+      </Fold>
     </section>
   );
 }

@@ -5,14 +5,6 @@
 
 import type { LocalPoint } from './projection';
 
-function perpendicularDistance(p: LocalPoint, a: LocalPoint, b: LocalPoint): number {
-  const dx = b.x - a.x;
-  const dz = b.z - a.z;
-  const len = Math.hypot(dx, dz);
-  if (len === 0) return Math.hypot(p.x - a.x, p.z - a.z);
-  return Math.abs(dz * p.x - dx * p.z + b.x * a.z - b.z * a.x) / len;
-}
-
 export function simplify<T extends LocalPoint>(points: readonly T[], toleranceM: number): T[] {
   if (points.length < 3) return points.slice();
 
@@ -24,10 +16,22 @@ export function simplify<T extends LocalPoint>(points: readonly T[], toleranceM:
   const stack: Array<[number, number]> = [[0, points.length - 1]];
   while (stack.length) {
     const [first, last] = stack.pop()!;
+    const a = points[first]!;
+    const b = points[last]!;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    // Once a span, not once a point: on a whole route this is most of the work.
+    const len = Math.hypot(dx, dz);
+    const ab = b.x * a.z;
+    const ba = b.z * a.x;
     let maxDist = 0;
     let index = -1;
     for (let i = first + 1; i < last; i++) {
-      const d = perpendicularDistance(points[i]!, points[first]!, points[last]!);
+      const p = points[i]!;
+      const d =
+        len === 0
+          ? Math.hypot(p.x - a.x, p.z - a.z)
+          : Math.abs(dz * p.x - dx * p.z + ab - ba) / len;
       if (d > maxDist) {
         maxDist = d;
         index = i;

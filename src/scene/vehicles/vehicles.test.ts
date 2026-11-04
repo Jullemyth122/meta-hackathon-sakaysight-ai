@@ -12,8 +12,9 @@ const KINDS: VehicleKind[] = ['modern', 'uv', 'bus'];
 describe('modern jeepney, UV Express and bus', () => {
   it.each(KINDS)('%s: built to its size, with the seats its spec has', (kind) => {
     const S = VEHICLES[kind];
-    const { parts, seats } = vehicleGeometry(kind);
+    const { parts, seats, standing } = vehicleGeometry(kind);
     expect(seats.length).toBe(S.seats);
+    expect(standing.length).toBe(S.standing);
     const all = new Box3();
     for (const g of Object.values(parts)) {
       g!.computeBoundingBox();
@@ -27,8 +28,8 @@ describe('modern jeepney, UV Express and bus', () => {
     expect(all.max.y).toBeGreaterThan(S.heightM - 0.05);
     expect(all.max.y).toBeLessThan(S.heightM + 0.1);
     expect(size.z).toBeLessThan(S.widthM + 0.5);
-    // The wheels touch the ground, and nothing passes through the axles' line beyond the body.
-    expect(all.min.y).toBeLessThan(0.01);
+    // The body sits low between the wheels, which are drawn apart from it (Axle).
+    expect(all.min.y).toBeLessThan(S.wheelRadiusM);
     // Every door on the kerb side, within the body, clear of the wheels (or,
     // a van's cab door, its sill above the wheel's arch).
     for (const d of S.doors) {

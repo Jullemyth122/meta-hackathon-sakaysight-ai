@@ -14,6 +14,8 @@
  */
 
 import { FARE_BY_VEHICLE, fareFor } from '../fare';
+import { aheadOf } from '../geo/routes';
+import { YOUR_SPOT } from '../network/roadside';
 import type { FleetKind } from '../vehicles/specs';
 import type { Dispatch } from './dispatch';
 import {
@@ -56,6 +58,8 @@ export interface CommuterView {
   phase: PassengerPhase | 'planning';
   approach: { mode: 'walk' | 'tricycle'; distanceM: number; etaS: number } | null;
   stop: { index: number; name: string; towards?: string };
+  /** Waiting by the road, not at that stop. */
+  roadside: boolean;
   destination: { index: number; name: string };
   /** People in the queue who board before you. */
   queueAhead: number;
@@ -84,6 +88,28 @@ export interface CommuterView {
 
 const ARRIVALS_SHOWN = 3;
 
+/**
+ * Someone riding `vehicle`, to show its ride on a phone: whoever on board has
+ * furthest to go (so it lasts), else the first waiting for it. Null when it
+ * has nobody yet.
+ */
+export function riderOf(state: TwinState, plan: Dispatch, vehicle: number): number | null {
+  const v = state.vehicles[vehicle];
+  if (!v) return null;
+  let best: number | null = null;
+  let furthest = -Infinity;
+  for (const p of state.passengers) {
+    if (p.vehicle !== vehicle || (p.phase !== 'seated' && p.phase !== 'boarding')) continue;
+    const left = distanceTo(state.route, v, state.route.stops[p.destinationStop]!.s);
+    if (left > furthest) [best, furthest] = [p.id, left];
+  }
+  if (best !== null) return best;
+  const waiting = state.passengers
+    .filter((p) => p.phase === 'waiting' && plan.vehicleFor(p.id) === vehicle)
+    .sort((a, b) => a.queuedAt - b.queuedAt || a.id - b.id);
+  return waiting[0]?.id ?? null;
+}
+
 export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery): CommuterView {
   const { route, vehicles, passengers } = state;
   const p = 'passenger' in q ? passengers.find((x) => x.id === q.passenger) : undefined;
@@ -93,10 +119,30 @@ export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery)
   const destination = p ? p.destinationStop : (q as { destination: number }).destination;
   const direction: 1 | -1 =
     p?.direction ?? (route.loop || route.stops[destination]!.s >= route.stops[origin]!.s ? 1 : -1);
+  // By the road there is no queue, and it is there that a vehicle has to get to.
+  const flagS = p?.flagS;
   const queue = passengers
-    .filter((x) => x.phase === 'waiting' && x.originStop === origin && x.direction === direction)
+    .filter(
+      (x) =>
+        flagS === undefined &&
+        x.phase === 'waiting' &&
+        x.flagS === undefined &&
+        x.originStop === origin &&
+        x.direction === direction,
+    )
     .sort((a, b) => a.queuedAt - b.queuedAt || a.id - b.id);
-  const queueAhead = p?.phase === 'waiting' ? queue.findIndex((x) => x.id === p.id) : queue.length;
+  const queueAhead =
+    p?.phase === 'waiting'
+      ? Math.max(
+          0,
+          queue.findIndex((x) => x.id === p.id),
+        )
+      : queue.length;
+  const pickupS = flagS ?? route.stops[origin]!.s;
+  const shortM = flagS === undefined ? 0 : aheadOf(route, flagS, route.stops[origin]!.s);
+  /** When `v` gets to you: sooner than the stop after you, when you are by the road. */
+  const etaOf = (v: (typeof vehicles)[number]) =>
+    Math.max(0, plan.etaS(v.index, origin) - shortM / Math.max(v.paceMps ?? 0, 1));
   const approach =
     p?.phase === 'approaching' && Number.isFinite(p.arrivalInS)
       ? {
@@ -116,9 +162,9 @@ export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery)
         loadsAt(route, v, origin) &&
         carries(route, v, origin, destination),
     )
-    .map((v) => ({ v, d: distanceTo(route, v, route.stops[origin]!.s) }))
-    .filter(({ d }) => d > -5)
-    .sort((a, b) => plan.etaS(a.v.index, origin) - plan.etaS(b.v.index, origin))
+    .map((v) => ({ v, d: distanceTo(route, v, pickupS) }))
+    .filter(({ v, d }) => d > -5 && d <= distanceTo(route, v, route.stops[origin]!.s) + 5)
+    .sort((a, b) => etaOf(a.v) - etaOf(b.v))
     .map(({ v, d }) => {
       const freeSeats = plan.freeSeatsAt(v.index, origin);
       return {
@@ -126,13 +172,13 @@ export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery)
         plate: v.plate,
         kind: v.kind ?? 'jeepney',
         distanceM: Math.max(0, d),
-        etaS: plan.etaS(v.index, origin),
+        etaS: etaOf(v),
         freeSeats,
         seatsForYou: Math.max(
           assigned === v.index ? 1 : 0,
           freeSeats - plan.claimedAt(v.index, origin),
         ),
-        catchable: !approach || plan.etaS(v.index, origin) >= approach.etaS,
+        catchable: !approach || etaOf(v) >= approach.etaS,
       };
     });
 
@@ -146,7 +192,7 @@ export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery)
   const shown = arrivals.slice(0, ARRIVALS_SHOWN);
   if (pickup && !shown.includes(pickup)) shown[ARRIVALS_SHOWN - 1] = pickup;
 
-  const distanceM = rideDistance(route, origin, destination, direction);
+  const distanceM = rideDistance(route, origin, destination, direction) + shortM;
   const km = distanceM / 1000;
 
   // On board: straight from the jeepney's position to the destination.
@@ -183,7 +229,8 @@ export function commuterView(state: TwinState, plan: Dispatch, q: CommuterQuery)
   return {
     phase: p ? p.phase : 'planning',
     approach,
-    stop: { index: origin, name: st.name, towards: st.towards },
+    stop: { index: origin, name: flagS === undefined ? st.name : YOUR_SPOT, towards: st.towards },
+    roadside: flagS !== undefined,
     destination: { index: destination, name: route.stops[destination]!.name },
     queueAhead: Math.max(0, queueAhead),
     arrivals: shown,

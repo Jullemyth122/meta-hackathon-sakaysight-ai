@@ -111,7 +111,9 @@ describe('personal first-mile journeys', () => {
   });
 
   it('brings some generated riders from 100–500 m away, on foot or by tricycle', () => {
-    const { crew, snapshot } = setup();
+    const { crew, fleet, snapshot } = setup();
+    // Out of the way: it stands still here, and nobody crosses through a vehicle.
+    fleet.vehicles[0]!.s = 100;
     crew.demand(1, 200);
     // Both directions: a line's middle stop is served both ways.
     const incoming = incomingAtStop(snapshot(), 1);
@@ -123,7 +125,7 @@ describe('personal first-mile journeys', () => {
     expect(tricycles.length).toBeGreaterThan(5);
     expect(tricycles.every((p) => p.distanceM > 250)).toBe(true);
     // Everyone reaches the queue: the furthest walker, 500 m, in well under 10 minutes.
-    crew.update(600);
+    for (let t = 0; t < 600; t++) crew.update(1);
     expect([...crew.passengers.values()].every((p) => p.phase === 'waiting')).toBe(true);
   });
 

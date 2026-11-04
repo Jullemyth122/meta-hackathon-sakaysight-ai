@@ -10,7 +10,8 @@
 import { DIESEL_COMMON_PHP_PER_L } from '../fuel/stations';
 import type { Route } from '../geo/routes';
 import { aheadOf } from '../geo/routes';
-import type { FleetKind } from '../vehicles/specs';
+import type { RiderKind } from '../fare';
+import { FUEL, type FleetKind } from '../vehicles/specs';
 import { stopRoles, stopsAheadFor } from '../vehicles/stops';
 
 export interface VehicleState {
@@ -51,6 +52,8 @@ export type ApproachMode = 'walk' | 'tricycle';
 
 export interface PassengerState {
   id: number;
+  /** Who they are, as the app knows it; a real deployment knows this of app users only. */
+  kind?: RiderKind;
   phase: PassengerPhase;
   originStop: number;
   /**
@@ -66,6 +69,10 @@ export interface PassengerState {
   z: number;
   /** When they joined the queue (seconds): earlier arrivals board first. */
   queuedAt: number;
+  /** Set out to board by the road this far along the route, not at a stop. */
+  flagS?: number;
+  /** …by a side street off the route, there: only a vehicle driving that street takes them. */
+  byStreet?: boolean;
   /** First-mile mode and remaining path estimates, when known. */
   approachMode?: ApproachMode;
   distanceToStopM?: number;
@@ -74,6 +81,10 @@ export interface PassengerState {
 
 export interface TwinState {
   route: Route;
+  /** How long the road to each stop has been taking lately (seconds, 0 unknown). */
+  stopToStopS?: ArrayLike<number>;
+  /** Stretches of road known to be crawling (a real deployment: its phones' speeds). */
+  slowRoad?: ReadonlyArray<{ s: number; halfM: number; mps: number }>;
   vehicles: readonly VehicleState[];
   passengers: readonly PassengerState[];
 }
@@ -98,8 +109,8 @@ export const ADVISORY = {
   minSpeedMps: 8 / 3.6,
   /** Moving speed on a clear Quirino Highway, for times further ahead when the pace is not known. */
   cruiseMps: 27 / 3.6,
-  /** Time lost at a stop where people get on or off. */
-  dwellS: 22,
+  /** Time lost at a stop where people get on or off (the twin's morning rush averages 30.6 s). */
+  dwellS: 30,
   fuel: {
     baseLPerKm: 0.14,
     perRiderLPerKm: 0.0025,
@@ -108,6 +119,16 @@ export const ADVISORY = {
     dieselPhpPerL: DIESEL_COMMON_PHP_PER_L,
   },
 } as const;
+
+/**
+ * Diesel a kilometre for a vehicle of `kind` with `riders` on board: the
+ * jeepney's figures (ADVISORY.fuel), scaled by how far each type goes on a
+ * litre (FUEL in vehicles/specs.ts).
+ */
+export function litresPerKm(kind: FleetKind | undefined, riders: number): number {
+  const scale = FUEL.jeepney.kmPerL / FUEL[kind ?? 'jeepney'].kmPerL;
+  return (ADVISORY.fuel.baseLPerKm + ADVISORY.fuel.perRiderLPerKm * riders) * scale;
+}
 
 /** Whether vehicle `v` can pick up someone waiting to travel in `direction`. */
 /**

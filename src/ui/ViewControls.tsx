@@ -11,18 +11,22 @@ import { KIND_NAME } from '@/core/vehicles/specs';
 import { SPEEDS, useApp } from '@/app/store';
 import { MAX_DAYS } from '@/app/twinRuntime';
 import { FleetData } from './FleetData';
+import { Menu, MenuItem } from './Menu';
 import { useTicker } from './useTicker';
 
 export function ViewControls() {
   const { twin } = useRuntimes();
   const follow = useApp((s) => s.follow);
   const setFollow = useApp((s) => s.setFollow);
-  const showFov = useApp((s) => s.showFov);
-  const setShowFov = useApp((s) => s.setShowFov);
   const requestShot = useApp((s) => s.requestShot);
   const fleetData = useApp((s) => s.fleetData);
   const hasMap = useApp((s) => s.map.state !== 'off');
   const count = twin.fleet.vehicles.length;
+  const looks = [
+    ['chase', 'Outside'],
+    ['pov', 'Front'],
+    ['inside', 'Inside'],
+  ] as const;
 
   const view = follow?.view ?? 'chase';
   // The next jeepney out on the road: a parked one is not drawn, so riding it
@@ -38,15 +42,19 @@ export function ViewControls() {
     <>
       <div className="view-hud">
         <div className="view-controls" role="toolbar" aria-label="Camera">
-          <button type="button" className="btn" onClick={() => requestShot('overview')}>
-            Whole route
-          </button>
-          <button type="button" className="btn" onClick={() => requestShot('street')}>
-            Street view
-          </button>
+          {!follow && (
+            <div className="seg" role="group" aria-label="Camera">
+              <button type="button" onClick={() => requestShot('overview')}>
+                Whole route
+              </button>
+              <button type="button" onClick={() => requestShot('street')}>
+                Street
+              </button>
+            </div>
+          )}
           <select
             className="btn view-controls__select"
-            aria-label="Choose a jeepney to monitor"
+            aria-label="Choose a vehicle to monitor"
             value={follow?.kind === 'sim' ? String(follow.index) : ''}
             onChange={(e) => {
               const val = e.target.value;
@@ -54,7 +62,7 @@ export function ViewControls() {
               else setFollow({ kind: 'sim', index: Number(val), view });
             }}
           >
-            <option value="">Choose jeepney (or click in 3D)…</option>
+            <option value="">Choose a vehicle…</option>
             {twin.fleet.vehicles.map((v, i) => (
               <option key={v.id} value={i}>
                 {v.plate}
@@ -63,48 +71,42 @@ export function ViewControls() {
               </option>
             ))}
           </select>
-          <button type="button" className="btn btn--primary" onClick={rideNext}>
-            {follow?.kind === 'sim' ? 'Next jeepney' : 'Ride a jeepney'}
+          <button
+            type="button"
+            className={`btn ${follow ? '' : 'btn--primary'}`}
+            onClick={rideNext}
+          >
+            {follow?.kind === 'sim' ? 'Next' : 'Ride along'}
           </button>
           {follow && (
-            <button
-              type="button"
-              className="btn"
-              aria-pressed={view === 'pov'}
-              onClick={() => setFollow({ ...follow, view: view === 'pov' ? 'chase' : 'pov' })}
-            >
-              {view === 'pov' ? 'Outside view' : 'Front POV'}
-            </button>
+            <div className="seg" role="group" aria-label="Camera view">
+              {looks.map(([look, name]) => (
+                <button
+                  key={look}
+                  type="button"
+                  aria-pressed={view === look}
+                  onClick={() => setFollow({ ...follow, view: look })}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
           )}
           {follow && (
             <button
               type="button"
               className="btn"
-              aria-pressed={view === 'inside'}
-              onClick={() => setFollow({ ...follow, view: view === 'inside' ? 'chase' : 'inside' })}
+              aria-label="Stop following"
+              title="Stop following"
+              onClick={() => setFollow(null)}
             >
-              {view === 'inside' ? 'Outside view' : 'Inside view'}
-            </button>
-          )}
-          {follow?.kind === 'sim' && view === 'chase' && (
-            <button
-              type="button"
-              className="btn"
-              aria-pressed={showFov}
-              onClick={() => setShowFov(!showFov)}
-            >
-              {showFov ? 'Hide FOV cone' : 'Show FOV cone'}
-            </button>
-          )}
-          {follow && (
-            <button type="button" className="btn" onClick={() => setFollow(null)}>
-              Stop following
+              ✕
             </button>
           )}
         </div>
         {follow?.kind === 'sim' && <RideCard index={follow.index} />}
       </div>
-      <SimDock operator />
+      <SimDock operator cone={follow?.kind === 'sim' && view === 'chase'} />
       {fleetData && <FleetData />}
       {hasMap && (
         <div className="map-credit">
@@ -136,9 +138,12 @@ export function ViewControls() {
 export function SimDock({
   operator = false,
   fuel = operator,
+  cone = false,
 }: {
   operator?: boolean;
   fuel?: boolean;
+  /** Offer the cabin camera's cone: riding along, seen from outside. */
+  cone?: boolean;
 }) {
   const speed = useApp((s) => s.simulationSpeed);
   const setSpeed = useApp((s) => s.setSimulationSpeed);
@@ -148,6 +153,8 @@ export function SimDock({
   const setOtherRoutes = useApp((s) => s.setOtherRoutes);
   const fleetData = useApp((s) => s.fleetData);
   const setFleetData = useApp((s) => s.setFleetData);
+  const showFov = useApp((s) => s.showFov);
+  const setShowFov = useApp((s) => s.setShowFov);
   return (
     <div className="view-dock">
       <MapStatusChip />
@@ -166,49 +173,49 @@ export function SimDock({
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="btn"
-          aria-pressed={skipNight}
-          title="While every jeepney is parked at night, run the clock fast to the morning"
-          onClick={() => setSkipNight(!skipNight)}
-        >
-          {skipNight ? 'Skipping nights' : 'Skip nights'}
-        </button>
-        {fuel && <FuelButton />}
-        {operator && (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={otherRoutes}
-            title="The other routes' jeepneys (estimated) on the map, around the route simulated in full"
-            onClick={() => setOtherRoutes(!otherRoutes)}
-          >
-            {otherRoutes ? 'Other routes: shown' : 'Other routes: hidden'}
-          </button>
-        )}
-        {operator && (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={fleetData}
-            onClick={() => setFleetData(!fleetData)}
-          >
-            {fleetData ? 'Hide jeepneys data' : 'All jeepneys data'}
-          </button>
-        )}
+        <Menu label="More">
+          <MenuItem
+            label="Skip nights"
+            state={skipNight ? 'On' : 'Off'}
+            title="While every vehicle is parked at night, run the clock fast to the morning"
+            onClick={() => setSkipNight(!skipNight)}
+          />
+          {operator && (
+            <MenuItem
+              label="Other routes"
+              state={otherRoutes ? 'Shown' : 'Hidden'}
+              title="The other routes' vehicles (estimated) on the map, around the route simulated in full"
+              onClick={() => setOtherRoutes(!otherRoutes)}
+            />
+          )}
+          {cone && (
+            <MenuItem
+              label="Camera cone"
+              state={showFov ? 'Shown' : 'Hidden'}
+              onClick={() => setShowFov(!showFov)}
+            />
+          )}
+          {operator && (
+            <MenuItem
+              label="All vehicles data"
+              state={fleetData ? 'Open' : ''}
+              onClick={() => setFleetData(!fleetData)}
+            />
+          )}
+          {fuel && <FuelItem />}
+        </Menu>
       </div>
     </div>
   );
 }
 
 /**
- * The fleet's diesel at a glance: how many jeepneys are at a station now (in
+ * The fleet's diesel at a glance: how many vehicles are at a station now (in
  * line or at the pumps), and how many are on their way to one. Clicking
  * rides along with one (at a station first), to watch it pull in, fill up
  * and go on.
  */
-function FuelButton() {
+function FuelItem() {
   useTicker(2);
   const { twin } = useRuntimes();
   const setFollow = useApp((s) => s.setFollow);
@@ -219,19 +226,13 @@ function FuelButton() {
     [...there].sort((a, b) => a.yard!.u - b.yard!.u)[0] ??
     [...out].sort((a, b) => a.tankL - b.tankL)[0];
   return (
-    <button
-      type="button"
-      className="btn"
+    <MenuItem
+      label="Ride with one getting diesel"
+      state={next ? `${there.length} there · ${going} going` : 'None yet'}
       disabled={!next}
-      title={
-        next
-          ? 'Ride along with a jeepney going for diesel'
-          : 'Below a quarter of a tank, a jeepney fills up at the next station on its side of the road. About half start the first day full (filled the night before), the rest 20–85%.'
-      }
+      title="Below a quarter of a tank, a vehicle fills up at the next station on its side of the road."
       onClick={() => next && setFollow({ kind: 'sim', index: next.id, view: 'chase' })}
-    >
-      {next ? `⛽ ${there.length} at a station · ${going} going` : '⛽ No one low on diesel yet'}
-    </button>
+    />
   );
 }
 
@@ -250,7 +251,6 @@ function RideCard({ index }: { index: number }) {
         <i className={`livery livery--${v.livery}`} aria-hidden="true" />
         <b className="mono">{v.plate}</b>
         {v.kind !== 'jeepney' && <span className="chip">{KIND_NAME[v.kind]}</span>}
-        <span className="chip chip--warn">Simulated</span>
       </span>
       <span className="kv">
         <span>Speed</span>
@@ -258,10 +258,14 @@ function RideCard({ index }: { index: number }) {
         <span>On board</span>
         <span className="mono">
           {v.occupancy} / {v.capacity}
+          {v.occupancy > v.seats &&
+            ` · ${v.occupancy - v.seats} ${v.kind === 'jeepney' ? 'sabit' : 'standing'}`}
         </span>
         <span>Camera estimate</span>
         <span className={`mono ${camera && camera.counts.current !== v.occupancy ? 'warn' : ''}`}>
-          {camera ? `${camera.counts.current} (sees ${camera.seenNow} heads)` : '–'}
+          {camera
+            ? `${camera.counts.current} (sees ${camera.tracks.length} ${'door' in camera.view ? 'heads' : 'at the door'})`
+            : '–'}
         </span>
         <span>Status</span>
         <span>{jeepneyStatus(twin, v)}</span>
@@ -274,9 +278,6 @@ function RideCard({ index }: { index: number }) {
           {v.currentStop === null ? (next?.name ?? '–') : twin.route.stops[v.currentStop]?.name}
         </span>
       </span>
-      <small className="ride-card__hint">
-        Drag to rotate · Scroll to zoom · Right-drag to move · Click any jeepney
-      </small>
     </div>
   );
 }
@@ -292,12 +293,12 @@ function DayClock() {
     ? ` · all ${MAX_DAYS} days done`
     : twin.night
       ? skipNight && speed > 0
-        ? ' · night: every jeepney parked, skipping to morning'
-        : ' · night: every jeepney parked'
+        ? ' · night, skipping to morning'
+        : ' · night, all parked'
       : '';
   return (
     <span className="chip day-clock" title="Simulated day of the month and time">
-      Day {day} of {MAX_DAYS} · {clockText(twin.clockS).slice(0, 5)}
+      Day {day} · {clockText(twin.clockS).slice(0, 5)}
       {note}
     </span>
   );

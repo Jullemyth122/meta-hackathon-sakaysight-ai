@@ -1,3 +1,5 @@
+import type { FleetKind } from '../vehicles/specs';
+
 /** One GPS sample, shaped like the browser Geolocation API reports it. */
 export interface GpsFix {
   lat: number;
@@ -24,6 +26,10 @@ export interface SessionMeta {
   sessionId: string;
   vehicleId: string;
   source: 'passenger-consented' | 'driver-device';
+  /** Who is sharing: a commuter is drawn as a person, a driver as their vehicle. */
+  role?: 'commuter' | 'driver';
+  /** What a driver drives (a tracker session is a jeepney). */
+  vehicleKind?: FleetKind;
   startedAt: number;
 }
 

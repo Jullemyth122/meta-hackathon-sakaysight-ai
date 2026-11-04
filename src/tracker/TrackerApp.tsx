@@ -119,7 +119,7 @@ export function TrackerApp() {
   return (
     <main className="tracker">
       <header className="tracker__bar">
-        <b>CommuteAI</b>
+        <b>SakaySightAI</b>
         <span className="tracker__tag">Phone tracker</span>
         <span className="mono">
           {transport ? (transport.kind === 'firebase' ? 'Firebase' : 'Loopback') : '…'}

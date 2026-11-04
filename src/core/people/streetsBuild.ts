@@ -23,7 +23,7 @@ export interface StreetsRoute {
   loop: boolean;
   points: LocalPoint[];
   stops: Stop[];
-  kerbs?: { s: number[]; m: number[] };
+  kerbs?: { s: number[]; m: number[]; room: number[] };
 }
 
 /** A route's catchments as plain data (graph and working-out). */

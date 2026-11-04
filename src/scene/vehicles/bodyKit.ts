@@ -661,12 +661,14 @@ export function wheels(
   halfW: number,
   dual: boolean,
   studs = 6,
+  /** Which ends: both, or one alone (a front wheel, which steers on its own). */
+  sides: readonly number[] = [-1, 1],
 ): void {
   const w = r * TYRE_WIDTH;
   const rim = r * 0.62;
   const recess = Math.min(0.045, w * 0.25);
   const facing = (g: BufferGeometry, side: number) => (side < 0 ? g.rotateY(Math.PI) : g);
-  for (const side of [-1, 1]) {
+  for (const side of sides) {
     for (const z of tyreZ(r, halfW, dual)) {
       const zc = side * z;
       P.add(

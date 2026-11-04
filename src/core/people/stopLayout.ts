@@ -80,6 +80,17 @@ export function pavementPoint(
 }
 
 /**
+ * Where someone waits at the side of the road, `s` metres along the route:
+ * `inM` onto the pavement, on the kerb a vehicle going `direction` pulls in to.
+ */
+export function roadsidePoint(route: Route, s: number, direction: 1 | -1, inM = 1): LocalPoint {
+  const p = route.polyline.pointAt(s);
+  const yaw = route.polyline.headingAt(s, 4.3) + (direction === 1 ? 0 : Math.PI);
+  const out = kerbAt(route, s) + inM;
+  return { x: p.x + Math.sin(yaw) * out, z: p.z + Math.cos(yaw) * out };
+}
+
+/**
  * Whether `p` is on a road the route drives on: closer to the route line
  * than its kerb. Where the route doubles back (a terminal loop), one road's
  * pavement can be another road's lane.

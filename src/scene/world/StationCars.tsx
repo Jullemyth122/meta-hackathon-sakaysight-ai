@@ -53,7 +53,7 @@ export function StationCars({ fleet }: { fleet: FleetSim }) {
           n,
           colour.set(CAR_COLOURS[(v.id * 2 + y.cars - j) % CAR_COLOURS.length]!),
         );
-        yardPose(fleet.route, y.stop, y.bay, pumpAt(y.stop) - j * CAR_GAP_M, pose);
+        yardPose(fleet.route, y.stop, y.bay, pumpAt(y.stop, v.kind, y.bay) - j * CAR_GAP_M, pose);
         obj.position.set(pose.x, 0, pose.z);
         obj.rotation.set(0, pose.heading, 0);
         obj.scale.setScalar(k);

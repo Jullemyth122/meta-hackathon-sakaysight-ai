@@ -22,6 +22,10 @@
  * it already heard: "Read aloud" twice costs once.
  */
 
+import { refused } from './_lib/guard.js';
+
+/** An answer read out every 3 seconds, per visitor: each one bills by the character. */
+const PER_MINUTE = 20;
 /**
  * The longest answer assist.ts asks for (about 120 words, ~800 characters)
  * with room to spare; anything longer is not an answer, so not paid for.
@@ -72,7 +76,7 @@ function azure(text: string, lang: Lang): Promise<Response> {
         'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY!,
         'Content-Type': 'application/ssml+xml',
         'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
-        'User-Agent': 'CommuteAI',
+        'User-Agent': 'SakaySightAI',
       },
       body: `<speak version="1.0" xml:lang="${locale}"><voice name="${xml(voice)}">${xml(text)}</voice></speak>`,
       signal: AbortSignal.timeout(20_000),
@@ -81,6 +85,8 @@ function azure(text: string, lang: Lang): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const no = refused(request, 'speak', PER_MINUTE);
+  if (no) return no;
   const which = provider();
   if (!which) {
     return Response.json(

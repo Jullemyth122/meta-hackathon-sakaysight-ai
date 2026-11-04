@@ -48,7 +48,14 @@ export interface PeopleHandle {
    * someone differently (the driver). `visibility` (0–1) only counts with
    * `fading`. Ignored once capacity is reached.
    */
-  emit(root: Matrix4, pose: PersonPose, seed: number, look?: Appearance, visibility?: number): void;
+  emit(
+    root: Matrix4,
+    pose: PersonPose,
+    seed: number,
+    look?: Appearance,
+    visibility?: number,
+    pregnant?: boolean,
+  ): void;
   end(): void;
 }
 
@@ -80,10 +87,13 @@ export function PeopleInstances({
   capacity,
   castShadow = true,
   fading = false,
+  layer,
   ref,
 }: {
   capacity: number;
   castShadow?: boolean;
+  /** The layer to draw on, when not every camera should see them. */
+  layer?: number;
   /** Draw each person's `visibility` (see emit). */
   fading?: boolean;
   ref: Ref<PeopleHandle>;
@@ -108,6 +118,7 @@ export function PeopleInstances({
         pelvis: new Matrix4(),
         head: new Matrix4(),
         hair: new Matrix4(),
+        belly: new Matrix4(),
         thigh: [new Matrix4(), new Matrix4()],
         shin: [new Matrix4(), new Matrix4()],
         foot: [new Matrix4(), new Matrix4()],
@@ -128,11 +139,11 @@ export function PeopleInstances({
         state.n = 0;
         state.coloursDirty = false;
       },
-      emit(root, pose, seed, lookOverride, visibility = 1) {
+      emit(root, pose, seed, lookOverride, visibility = 1, pregnant = false) {
         const i = state.n;
         if (i >= capacity) return;
         state.n++;
-        state.writer.write(root, pose, state.out);
+        state.writer.write(root, pose, state.out, pregnant);
         const recolour = state.seeds[i] !== seed;
         const look = recolour ? (lookOverride ?? appearance(seed)) : null;
         if (recolour) {
@@ -166,6 +177,8 @@ export function PeopleInstances({
           const mesh = meshes.current[part];
           if (!mesh) continue;
           mesh.count = isPaired(part) ? state.n * 2 : state.n;
+          // Nobody to draw: not a draw call in every pass.
+          mesh.visible = mesh.count > 0;
           if (mesh.count === 0) continue;
           // Upload only visible instances, not the capacity reserved for the
           // entire fleet. Both WebGPU and WebGL support these update ranges.
@@ -195,6 +208,7 @@ export function PeopleInstances({
           key={`${part}-${capacity}-${fade ? 'fade' : 'solid'}`}
           ref={(m) => {
             meshes.current[part] = m;
+            if (m && layer !== undefined) m.layers.set(layer);
             // A fresh mesh has no colours yet: force every slot to recolour.
             if (m) state.seeds.fill(-1);
           }}

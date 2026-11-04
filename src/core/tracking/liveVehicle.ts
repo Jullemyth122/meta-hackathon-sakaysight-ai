@@ -16,6 +16,8 @@ export type LinkStatus = 'live' | 'stale' | 'lost';
 
 const STALE_MS = 8_000;
 const LOST_MS = 30_000;
+/** Not heard from for this long, a phone has gone: it leaves the map (a real one just stopped). */
+const GONE_MS = 60_000;
 const MAX_EXTRAPOLATION_S = 2;
 /** Rendered pose closes ~63% of the gap to the target every this many seconds. */
 const SMOOTHING_S = 0.5;
@@ -23,6 +25,9 @@ const SMOOTHING_S = 0.5;
 const MATCH_BACK_M = 60;
 const MATCH_AHEAD_M = 250;
 const MAX_TRACE_POINTS = 4_000;
+
+/** Whether a phone last heard from at `lastFixAt` has gone (see GONE_MS). */
+export const phoneGone = (lastFixAt: number, now: number): boolean => now - lastFixAt > GONE_MS;
 
 export interface Pose {
   x: number;

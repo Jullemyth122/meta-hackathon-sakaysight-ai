@@ -12,8 +12,9 @@
  */
 
 import { PerspectiveCamera, Plane, Ray, Vector3 } from 'three';
-import { FRAME_H, FRAME_W } from '@/core/doorway/pipeline';
+import { FRAME_H, FRAME_W, type DoorLineView } from '@/core/doorway/pipeline';
 import { VEHICLES, type DoorSpec, type VehicleKind } from '@/core/vehicles/specs';
+import { toPixels } from '../doorway/cabinCamera';
 
 export interface DoorCam {
   door: DoorSpec;
@@ -33,13 +34,13 @@ export function doorCameras(kind: VehicleKind): DoorCam[] {
   const ceiling = S.floorM + S.headroomM;
   const halfW = S.widthM / 2;
   return S.doors.map((door) => {
-    // A van's cab door: at its back edge, under the roof just behind the
-    // raked windscreen (over its middle would be outside the glass), looking
-    // down and forward at the sill and the seat.
+    // A van's cab door: on the ceiling just behind it (over its middle would
+    // be outside the raked windscreen, and any lower, level with the head of
+    // someone climbing in), looking down and forward at the sill and the seat.
     if (door.opens === 'hinged')
       return {
         door,
-        position: new Vector3(door.x0, door.y1 + 0.05, halfW - IN_FROM_WALL_M),
+        position: new Vector3(door.x0 - 0.18, ceiling - BELOW_CEILING_M, halfW - IN_FROM_WALL_M),
         lookAt: new Vector3(door.x0 + 0.35, door.y0, halfW - IN_FROM_WALL_M - 0.45),
         vfov: 140,
       };
@@ -69,6 +70,26 @@ export function createDoorCamera(cam: DoorCam): PerspectiveCamera {
   c.updateMatrixWorld();
   c.updateProjectionMatrix();
   return c;
+}
+
+/** Half a head's width or so: within this of the door line, a head is at the door (pixels). */
+const DOOR_BAND_PX = 6;
+
+/**
+ * The line through the door under the camera, as it falls in the frame: a
+ * rider crossing it has gone through. It lies in the vertical plane through
+ * the lens along the door (see DoorLineView), so any two points of that plane
+ * below the lens give it.
+ */
+export function doorLineView(cam: DoorCam, camera: PerspectiveCamera, name: string): DoorLineView {
+  const { x, z } = cam.position;
+  const y = cam.door.y0;
+  const at = (px: number, pz: number) => toPixels(ndc.set(px, y, pz).project(camera));
+  const a = at(x - 0.3, z);
+  const b = at(x + 0.3, z);
+  const cabin = at(x, z - 0.3);
+  const cross = (b.x - a.x) * (cabin.y - a.y) - (b.y - a.y) * (cabin.x - a.x);
+  return { name, a, b, insideSign: cross > 0 ? 1 : -1, bandPx: DOOR_BAND_PX };
 }
 
 const ndc = new Vector3();

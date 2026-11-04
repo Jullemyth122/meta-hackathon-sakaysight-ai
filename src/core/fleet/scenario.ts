@@ -1,3 +1,8 @@
+import type { FleetKind } from '../vehicles/specs';
+
+/** How many of each kind of vehicle. */
+export type FleetMix = Record<FleetKind, number>;
+
 /**
  * Synthetic single-route experiments. Values are inputs, not measured
  * ridership for this route (nobody publishes that), but they are sized from
@@ -19,6 +24,11 @@
  */
 export interface SimulationScenario {
   vehicles: number;
+  /**
+   * How many of each kind, when chosen by hand: kept from route to route, and
+   * `vehicles` is their sum. Without it, each route has its usual mix.
+   */
+  mix?: FleetMix;
   dailyTrips: number;
   startHour: number;
   /**
@@ -133,12 +143,97 @@ export const COMMUTE_BY_HOUR: readonly number[] = Array.from(
   (_, h) => COMMUTE[2 * h]! + COMMUTE[2 * h + 1]!,
 );
 
+/** The most one route can be asked to simulate, vehicle by vehicle. */
+export const MAX_SCENARIO_VEHICLES = 600;
+export const MAX_SCENARIO_TRIPS = 300_000;
+
+/** The order the kinds are listed in. */
+export const FLEET_KINDS: readonly FleetKind[] = ['jeepney', 'modern', 'uv', 'bus'];
+
+export const mixTotal = (mix: FleetMix): number =>
+  FLEET_KINDS.reduce((sum, kind) => sum + mix[kind], 0);
+
+/**
+ * The fleet a mix makes, its kinds scattered along the list (which is the
+ * order vehicles come out in), not one kind after another.
+ */
+export function mixKinds(mix: FleetMix): FleetKind[] {
+  const list = FLEET_KINDS.flatMap((kind) => Array.from({ length: mix[kind] }, () => kind));
+  const place = (i: number) => ((i + 1) * 0.618_033_988_75) % 1;
+  return list
+    .map((kind, i) => ({ kind, at: place(i) }))
+    .sort((a, b) => a.at - b.at)
+    .map((v) => v.kind);
+}
+
+/**
+ * Which of a route's fleet to simulate, `vehicles` of them: the first ones, or
+ * as many of each kind as `mix` asks for. Always with vehicle `keep` (one
+ * someone clicked), which takes the place of the last of its kind if need be.
+ * In the fleet's own order.
+ */
+export function pickFleet<T extends { index: number; kind: FleetKind }>(
+  fleet: readonly T[],
+  vehicles: number,
+  mix?: FleetMix,
+  keep?: number,
+): T[] {
+  const left = mix ? { ...mix } : null;
+  const wanted = keep === undefined ? undefined : fleet[keep];
+  const chosen: T[] = [];
+  const take = (v: T) => {
+    chosen.push(v);
+    if (left) left[v.kind]--;
+  };
+  if (wanted) take(wanted);
+  for (const v of fleet) {
+    if (chosen.length >= vehicles) break;
+    if (v === wanted || (left && left[v.kind] <= 0)) continue;
+    take(v);
+  }
+  return chosen.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * A fleet's kinds in the order `start` has them, with as few changes as
+ * possible: a vehicle handed over from the flows stays what it is, and the
+ * fleet keeps the numbers it had of each kind where it can.
+ */
+export function alignKinds(
+  kinds: readonly FleetKind[],
+  start: ReadonlyArray<{ kind?: FleetKind }>,
+): FleetKind[] {
+  const out = [...kinds];
+  start.forEach(({ kind }, i) => {
+    if (!kind || i >= out.length || out[i] === kind) return;
+    const other = out.findIndex((k, j) => j > i && k === kind);
+    if (other >= 0) out[other] = out[i]!;
+    out[i] = kind;
+  });
+  return out;
+}
+
+/** A mix cut to what can be simulated, keeping the kinds in proportion. */
+function boundedMix(mix: FleetMix): FleetMix {
+  const whole = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0);
+  const clean = Object.fromEntries(FLEET_KINDS.map((k) => [k, whole(mix[k])])) as FleetMix;
+  const total = mixTotal(clean);
+  if (total === 0) return { ...clean, jeepney: 1 };
+  if (total <= MAX_SCENARIO_VEHICLES) return clean;
+  const cut = MAX_SCENARIO_VEHICLES / total;
+  return Object.fromEntries(FLEET_KINDS.map((k) => [k, Math.floor(clean[k] * cut)])) as FleetMix;
+}
+
 export function normalizeScenario(s: SimulationScenario): SimulationScenario {
   const bounded = (n: number, fallback: number, lo: number, hi: number) =>
     Math.round(Math.max(lo, Math.min(hi, Number.isFinite(n) ? n : fallback)));
+  const mix = s.mix && boundedMix(s.mix);
   return {
-    vehicles: bounded(s.vehicles, DEFAULT_SCENARIO.vehicles, 1, 200),
-    dailyTrips: bounded(s.dailyTrips, DEFAULT_SCENARIO.dailyTrips, 0, 120_000),
+    vehicles: mix
+      ? mixTotal(mix)
+      : bounded(s.vehicles, DEFAULT_SCENARIO.vehicles, 1, MAX_SCENARIO_VEHICLES),
+    ...(mix ? { mix } : {}),
+    dailyTrips: bounded(s.dailyTrips, DEFAULT_SCENARIO.dailyTrips, 0, MAX_SCENARIO_TRIPS),
     startHour: bounded(s.startHour, 6, 0, 23),
     ...(s.startOffsetS ? { startOffsetS: bounded(s.startOffsetS, 0, 0, 3599) } : {}),
     profile: s.profile === 'flat' ? 'flat' : 'commute',

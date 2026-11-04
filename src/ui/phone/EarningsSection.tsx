@@ -3,14 +3,15 @@
  *
  *   - Today, live from the twin, and every closed day of the month so far
  *     (FleetSim.history): what the driver would see in their own ledger.
- *   - What CommuteAI changes, from the profit model (core/economics) run in
+ *   - What SakaySightAI changes, from the profit model (core/economics) run in
  *     a background worker for this route: the route's average jeepney over
  *     30 simulated days with and without it. One jeepney's own days swing
- *     far more with luck than CommuteAI's effect, so they cannot show it.
+ *     far more with luck than SakaySightAI's effect, so they cannot show it.
  */
 
 import { useEffect, useState } from 'react';
-import { dayMoney } from '@/app/earnings';
+import { boundaryFor, boundaryRangeText, dayMoney } from '@/app/earnings';
+import { KIND_WORD } from '@/core/vehicles/specs';
 import { jeepneyStatus } from '@/app/status';
 import { MAX_DAYS, type TwinRuntime } from '@/app/twinRuntime';
 import {
@@ -66,7 +67,7 @@ function simulateMonth(route: Route, vehicles: number): Promise<RunResult> {
   return job;
 }
 
-/** The route's average jeepney under one policy, per day: the fair test of CommuteAI. */
+/** The route's average jeepney under one policy, per day: the fair test of SakaySightAI. */
 function fleetAverage(run: RunResult, mode: Mode) {
   const rows = run.days.map((d) => d.results.find((r) => r.mode === mode)!);
   const n = run.config.vehicles;
@@ -102,7 +103,10 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
     day: h.day,
     totals: h.totals[index]!,
   }));
-  const closed = days.map((d) => ({ ...d, money: dayMoney({ day: d.totals }) }));
+  const closed = days.map((d) => ({
+    ...d,
+    money: dayMoney({ kind: v.kind, id: v.id, day: d.totals }),
+  }));
   const sum = (f: (d: (typeof closed)[number]) => number) => closed.reduce((s, d) => s + f(d), 0);
   const fleet = month
     ? {
@@ -127,10 +131,11 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
         </p>
       ) : (
         <p className="fine">
-          This jeepney only. Its driver pays <strong>boundary</strong>: the fixed fee to the
-          jeepney’s owner (the operator) for each day they drive it, ₱
-          {DEFAULT_EXPERIMENT.boundaryPhp} here. The driver buys the diesel and keeps whatever fares
-          are left.
+          This {KIND_WORD[v.kind ?? 'jeepney']} only. Its driver pays <strong>boundary</strong>: the
+          fixed fee to its owner (the operator) for each day they drive it, ₱
+          {boundaryFor(v.kind, v.id).toLocaleString()} here
+          {boundaryRangeText(v.kind) ? ` (${boundaryRangeText(v.kind)} for this kind)` : ''}. The
+          driver buys the diesel and keeps whatever fares are left.
         </p>
       )}
       <h4 className="section__subtitle">
@@ -221,7 +226,7 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
         </>
       )}
 
-      <h4 className="section__subtitle">What CommuteAI changes for a driver here</h4>
+      <h4 className="section__subtitle">What SakaySightAI changes for a driver here</h4>
       {!fleet && !error && <p className="fine">Working out a month with and without it…</p>}
       {error && <p className="error">{error}</p>}
       {fleet && month && (
@@ -231,7 +236,7 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
               <tr>
                 <th>Average jeepney, a month</th>
                 <th>Without</th>
-                <th>With CommuteAI</th>
+                <th>With SakaySightAI</th>
               </tr>
             </thead>
             <tbody>
@@ -255,7 +260,7 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
             </tbody>
           </table>
           <p className="fine">
-            CommuteAI:{' '}
+            SakaySightAI:{' '}
             <strong className={gain >= 0 ? 'good' : 'bad'}>
               {gain >= 0 ? '+' : '−'}
               {peso(Math.abs(gain) * MONTH_DAYS)} a month
@@ -265,7 +270,7 @@ export function EarningsSection({ twin, index }: { twin: TwinRuntime; index: num
             bill included. From the profit model: {MONTH_DAYS} days of this route with{' '}
             {month.config.vehicles} jeepneys, the same riders with and without, averaged over all of
             them, because one jeepney’s own days swing by hundreds of pesos with luck, far more than
-            CommuteAI’s effect.
+            SakaySightAI’s effect.
           </p>
         </>
       )}

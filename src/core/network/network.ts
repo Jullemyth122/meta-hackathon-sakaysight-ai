@@ -11,7 +11,7 @@
 
 import { Polyline } from '../geo/polyline';
 import type { LatLng, LocalPoint, Projection } from '../geo/projection';
-import { kerbsAlong, type Route, type Stop } from '../geo/routes';
+import { kerbsAlong, smoothRoute, type Route, type Stop } from '../geo/routes';
 import { removeSpurs } from './spurs';
 
 /** Spur-cutting passes over a route's path (each can bare a spur the last one hid). */
@@ -42,6 +42,8 @@ export interface NetworkRouteFile {
   stopsTotal?: number;
   /** Indices into stops of the two terminals (the start, and where the way back starts). */
   terminals: [number, number];
+  /** How many vehicles it has, once planned (core/network/fleetSize.ts). */
+  fleet?: number;
   /** Left out of the network, and why (kept in the file to bring back). */
   hidden?: string;
   /** A bus or UV Express route (its own terminals and fleet); absent, a jeepney route. */
@@ -189,7 +191,8 @@ export function placeFarTerminal(stops: Stop[], line: Polyline, endName: string)
  * path cleaned of the router's out-and-back spurs (see spurs.ts) unless the
  * file says that was done already.
  */
-export function networkRoute(meta: NetworkRouteFile, projection: Projection, clean = true): Route {
+/** The file's path as drawn on the road, closed and with its spurs cut; stops in metres along it. */
+function cleanPath(meta: NetworkRouteFile, projection: Projection, clean: boolean) {
   const raw: LocalPoint[] = decodePath(meta.path).map((p) => projection.toLocal(p));
   const first = raw[0]!;
   const last = raw[raw.length - 1]!;
@@ -201,12 +204,28 @@ export function networkRoute(meta: NetworkRouteFile, projection: Projection, cle
     const terminalS = meta.terminals.map((i) => path.stopS[i] ?? 0);
     path = removeSpurs(path.points, path.stopS, terminalS);
   }
-  const polyline = new Polyline(path.points);
+  return path;
+}
+
+/** The line a route's `roads` are measured along. */
+export function routeLine(meta: NetworkRouteFile, projection: Projection): Polyline {
+  return new Polyline(cleanPath(meta, projection, true).points);
+}
+
+export function networkRoute(meta: NetworkRouteFile, projection: Projection, clean = true): Route {
+  const path = cleanPath(meta, projection, clean);
+  const drawn = new Polyline(path.points);
+  // Corners into curves; stops and kerbs follow onto the new line.
+  const { polyline, kerbs, toSmooth } = smoothRoute(
+    drawn,
+    true,
+    meta.roads?.length ? kerbsAlong(drawn, meta.roads) : undefined,
+  );
   const L = polyline.length;
   const terminals = new Set(meta.terminals);
   const stops: Stop[] = meta.stops.map(([name], i) => ({
     name: shortStopName(name),
-    s: Math.min(Math.max(0, path.stopS[i]!), L - 1),
+    s: Math.min(Math.max(0, toSmooth(path.stopS[i]!)), L - 1),
     ...(terminals.has(i) && { terminal: true }),
   }));
   stops[0]!.s = 0; // the loop starts at its first terminal
@@ -231,7 +250,7 @@ export function networkRoute(meta: NetworkRouteFile, projection: Projection, cle
     stops,
     stopsSource: 'gtfs',
     projection,
-    ...(meta.roads?.length && { kerbs: kerbsAlong(polyline, meta.roads) }),
+    ...(kerbs && { kerbs }),
     note:
       'Stops from the DOTC GTFS feed (2015); road path by OSRM on OpenStreetMap. ' +
       'Routes may have changed since; verify by riding.',
@@ -315,10 +334,23 @@ export function trustworthy(m: NetworkRouteFile): boolean {
   );
 }
 
+/** The file's routes to show. */
+export const shownRoutes = (file: NetworkFile) =>
+  file.routes.filter((m) => !m.hidden && trustworthy(m));
+
 export function buildNetwork(file: NetworkFile, projection: Projection, first?: Route): Network {
-  const routes: NetworkRoute[] = file.routes
-    .filter((m) => !m.hidden && trustworthy(m))
-    .map((meta) => ({ meta, route: networkRoute(meta, projection, !file.spursRemoved) }));
+  return networkOf(
+    file,
+    shownRoutes(file).map((meta) => ({
+      meta,
+      route: networkRoute(meta, projection, !file.spursRemoved),
+    })),
+    first,
+  );
+}
+
+/** The network of `routes`, each built from `file` (the app builds them a few at a time). */
+export function networkOf(file: NetworkFile, routes: NetworkRoute[], first?: Route): Network {
   if (first) {
     routes.unshift({
       route: first,

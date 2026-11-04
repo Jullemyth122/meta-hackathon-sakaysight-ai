@@ -14,12 +14,13 @@ import { useApp } from '@/app/store';
 import type { FleetSim } from '@/core/fleet/fleetSim';
 import { VEHICLES, type VehicleKind } from '@/core/vehicles/specs';
 import { crewSeed, riderSeed } from '../jeepney/crew';
-import type { CrewState } from '../jeepney/crewState';
+import { isPregnant, type CrewState } from '../jeepney/crewState';
 import { drivingPose, type GroundPose } from '../jeepney/JeepneyInstances';
 import { PeopleInstances, type PeopleHandle } from '../people/PeopleInstances';
 import {
   appearance,
   driverAppearance,
+  holdRails,
   poseFromMotion,
   rootFor,
   STANDING,
@@ -33,6 +34,8 @@ import { vehicleGeometry } from './vehicleGeometry';
 const DRIVER_SEAT_K = 63;
 /** Riders are drawn within this of the camera, as the jeepneys' are (metres). */
 const CREW_WITHIN_M = 250;
+/** People drawn in vehicles of a kind at once: only those near the camera are. */
+const PEOPLE_SLOTS = 800;
 /** Moving faster than this, the doors are shut (m/s). */
 const DOORS_SHUT_MPS = 0.3;
 
@@ -40,20 +43,16 @@ interface Props {
   fleet: FleetSim;
   crew: CrewState;
   kind: VehicleKind;
+  /** Slots to keep from route to route (PuvBodies). */
+  capacity: number;
   onSelect?: (index: number, part: 'front' | 'body') => void;
 }
 
-export function PuvInstances({ fleet, crew, kind, onSelect }: Props) {
+export function PuvInstances({ fleet, crew, kind, capacity, onSelect }: Props) {
   const ids = useMemo(
     () => fleet.vehicles.filter((v) => v.kind === kind).map((v) => v.id),
     [fleet, kind],
   );
-  return ids.length === 0 ? null : (
-    <Instances fleet={fleet} crew={crew} kind={kind} ids={ids} onSelect={onSelect} />
-  );
-}
-
-function Instances({ fleet, crew, kind, ids, onSelect }: Props & { ids: readonly number[] }) {
   const viewer = useThree((s) => s.camera);
   const built = vehicleGeometry(kind);
   const S = VEHICLES[kind];
@@ -127,10 +126,12 @@ function Instances({ fleet, crew, kind, ids, onSelect }: Props & { ids: readonly
         grip[0].copy(built.driver.grips[0]).applyMatrix4(matrix);
         grip[1].copy(built.driver.grips[1]).applyMatrix4(matrix);
         crowd.emit(root, drivingPose(t, look.idle, 0, grip, person), seed, look);
-        crew.forEachRider(id, (riderId, motion) => {
+        crew.forEachRider(id, (riderId, motion, place) => {
           const riderLook = appearance(riderSeed(riderId));
           root.multiplyMatrices(matrix, rootFor(motion, riderLook.size, local));
-          crowd.emit(root, poseFromMotion(motion, riderLook, t, person), riderSeed(riderId));
+          poseFromMotion(motion, riderLook, t, person);
+          holdRails(person, motion.hold, place?.holds, matrix);
+          crowd.emit(root, person, riderSeed(riderId), undefined, 1, isPregnant(crew, riderId));
         });
       },
     }),
@@ -142,12 +143,13 @@ function Instances({ fleet, crew, kind, ids, onSelect }: Props & { ids: readonly
       <PuvBodies
         kind={kind}
         count={ids.length}
+        capacity={capacity}
         poseAt={poseAt}
         stateAt={stateAt}
         onSelect={onSelect && ((j, part) => onSelect(ids[j]!, part))}
         crew={draw}
       />
-      <PeopleInstances ref={people} capacity={ids.length * (S.seats + 1)} />
+      <PeopleInstances ref={people} capacity={PEOPLE_SLOTS} />
     </>
   );
 }

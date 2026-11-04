@@ -18,7 +18,20 @@ body {
   color: var(--fg);
   font-family: $font-body;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
 }
 
 button,
@@ -30,23 +43,28 @@ textarea {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }
 
+// Numbers that line up, in the one typeface.
 .mono {
-  font-family: $font-mono;
   font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--muted);
 }
 
 .fine {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+  font-style: italic;
 
   &.warn {
     color: var(--warn);

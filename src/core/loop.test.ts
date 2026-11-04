@@ -110,13 +110,13 @@ describe('Tungko – SM City Fairview', () => {
     expect(route.stops.filter((s) => s.name === 'Malaria').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('knows where the kerb is: Quirino Highway is two 11 m one-way carriageways here', () => {
+  it('knows where the kerb is: Quirino Highway is two 10.5 m one-way carriageways here', () => {
     const lagro = route.stops.find((s) => s.name === 'Lagro')!;
-    expect(kerbAt(route, lagro.s)).toBeCloseTo(5.5, 1);
+    expect(kerbAt(route, lagro.s)).toBeCloseTo(5.25, 1);
     // Never further out than the widest road the map draws.
     for (let s = 0; s < route.polyline.length; s += 50) {
       expect(kerbAt(route, s)).toBeGreaterThan(1);
-      expect(kerbAt(route, s)).toBeLessThanOrEqual(13);
+      expect(kerbAt(route, s)).toBeLessThanOrEqual(14);
     }
   });
 });

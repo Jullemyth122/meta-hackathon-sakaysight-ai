@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { defaultRoute, kerbAt } from '../geo/routes';
 import { buildNetwork, type NetworkFile } from './network';
 import { RouteFlow } from './flow';
-import { planTrips } from './plan';
+import { planTrips, WALK_TO_STOP_M } from './plan';
 import { landmarks, placesOf, searchPlaces, withAliases } from './search';
 
 describe('the Quirino Highway corridor in the network file', () => {
@@ -62,6 +62,8 @@ describe('the Quirino Highway corridor in the network file', () => {
       const arrivals = (r: number, stop: number, t: number) =>
         flows[r]!.arrivals(network.routes[r]!.route.stops[stop]!.s, t);
       const philcoa = searchPlaces(places, 'Philcoa', 1, near)[0]!;
+      // Where it really is: the jeepney stop on Commonwealth Avenue by Philcoa Auditorium.
+      const pin = first.projection!.toLocal({ lat: 14.654094, lng: 121.052831 });
       for (const from of ['Malaria', 'Sampaguita', 'SM Tungko']) {
         const place = searchPlaces(places, from, 1, near)[0]!;
         // The one by the route, not a namesake across the city (an area
@@ -71,7 +73,15 @@ describe('the Quirino Highway corridor in the network file', () => {
         // Boarding on the way to Philcoa, not on the other side of the road going back.
         const direct = options.filter((o) => o.legs.length === 1);
         expect(direct.length).toBeGreaterThan(0);
-        for (const o of direct) expect(o.legs[0]!.alightName).toBe('Philcoa');
+        // Off near the place itself, whatever each line calls its stop there
+        // ("Philcoa", "Philippine Coconut Authority", or "UP Wet & Dry Market"
+        // across the footbridge).
+        for (const o of direct) {
+          const { route: line, alight } = o.legs[0]!;
+          const r = network.routes[line]!.route;
+          const off = r.polyline.pointAt(r.stops[alight]!.s);
+          expect(Math.hypot(off.x - pin.x, off.z - pin.z)).toBeLessThan(WALK_TO_STOP_M);
+        }
         // One option per jeepney line.
         const lines = direct.map((o) => o.legs[0]!.route);
         expect(new Set(lines).size).toBe(lines.length);
@@ -95,7 +105,7 @@ describe('the Quirino Highway corridor in the network file', () => {
   );
 
   it('leaves out the 2015 routes that wind through San Jose del Monte, keeping them in the file', () => {
-    const hidden = file.routes.filter((r) => r.hidden);
+    const hidden = file.routes.filter((r) => r.hidden?.includes('GTFS path'));
     expect(hidden.length).toBe(8);
     for (const r of hidden) expect(ids.has(r.id)).toBe(false);
   });

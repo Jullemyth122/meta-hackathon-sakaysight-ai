@@ -6,6 +6,7 @@
  *              within DRIVER_MAP_RADIUS_M of their jeepney, re-checked once
  *              a second as it drives, and which of those are across the
  *              road (no U-turns, so of no use to them right now)
+ *   commuter   none (the scene passes no stations)
  *
  * Stations further away are not drawn for a driver, but the advice still
  * knows them (core/fuel/stations.ts fuelAhead: onMap false).

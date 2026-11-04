@@ -334,18 +334,29 @@ export function jeepneyBody(): JeepneyParts {
 export const JEEPNEY_AXLES = [2.12, -2.2] as const;
 /** Wheel nuts on each hub: what shows the wheels turning. */
 const WHEEL_NUTS = 5;
+/** Each wheel's middle, out from the jeepney's centre line (metres). */
+const WHEEL_TRACK_Z = 0.86;
 
 /**
- * An axle's two wheels, tyres and hubs, centred on the axle (drawn at each
- * of JEEPNEY_AXLES, WHEEL_RADIUS up, and turned about it as it rolls). Dark
- * wheel nuts on each hub, so the turning shows.
+ * Its four wheels: along it (an axle of JEEPNEY_AXLES), across it (+ on the
+ * right), and whether it steers (the front two).
+ */
+export const JEEPNEY_WHEELS = JEEPNEY_AXLES.flatMap((x, a) =>
+  [1, -1].map((side) => ({ x, z: side * WHEEL_TRACK_Z, side, steers: a === 0 })),
+);
+
+/**
+ * One wheel, tyre and hub, centred on itself, its hub facing +z (the
+ * right-hand side): drawn at each of JEEPNEY_WHEELS, WHEEL_RADIUS up, turned
+ * half round for the left, steered (the front two) and rolled about its own
+ * axle. Dark wheel nuts on the hub, so the turning shows.
  */
 export function jeepneyWheels(): WheelParts {
   if (cachedWheels) return cachedWheels;
   const tires: BufferGeometry[] = [];
   const hubs: BufferGeometry[] = [];
-  for (const side of [-1, 1]) {
-    const z = side * 0.86;
+  for (const side of [1]) {
+    const z = 0;
     tires.push(cylinder(WHEEL_RADIUS, WHEEL_RADIUS, 0.26, 22, 'z', 0, 0, z));
     hubs.push(cylinder(0.21, 0.21, 0.02, 20, 'z', 0, 0, z + side * 0.135));
     hubs.push(cylinder(0.07, 0.07, 0.05, 10, 'z', 0, 0, z + side * 0.15));
