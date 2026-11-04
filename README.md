@@ -2,56 +2,78 @@
 
 ### Making every seat, stop and peso count.
 
-**Know which ride you can catch. Help drivers notice the passengers they might miss. Make fuel decisions with the cost in view.**
+**Meta's Muse Wonder as an agent inside a 3D twin of Metro Manila's public transport.** Drivers and commuters ask in Taglish or English, by voice or with a photo. Muse reads the road, prices the choices in pesos, and acts: the jeepney reroutes, waits, hands its riders over or turns back.
 
-SakaySightAI is a Meta AI-powered public transport prototype for **traditional jeepneys, modern jeepneys, UV Express and buses**. It brings commuters, drivers and operators into a shared 3D world where seats, queues, walking journeys and vehicle movements inform the next decision—with questions and explanations in English, Tagalog or Taglish.
+**Built for the Meta Global AI Developer Hackathon · Build for Your World · Meta Muse Wonder · OpenStreetMap**
 
-**Built for the Meta Global AI Developer Hackathon ("Build for Your World") · Meta Muse Wonder · OpenStreetMap geography · Simulation-led product development**
-
-**[Try the live demo](https://commute-ai-lilac.vercel.app)** (open Demo scenes in the Driver or Commuter tab) · [Explore the evidence and savings math](./docs/evidence-and-decision-math.md) · [Read the product and technical notes](./Notes.md) · [Inspect saved experiments](./docs/simulation-results/README.md)
+**▶ [Watch the 3-minute demo](https://www.youtube.com/watch?v=Oht2pnhQYIk)** · **[Try it live](https://commute-ai-lilac.vercel.app)** (open **Demo scenes** in the Driver or Commuter tab) · [Evidence and savings math](./docs/evidence-and-decision-math.md) · [Product and technical notes](./Notes.md) · [Disclosure](#hackathon-disclosure)
 
 ## The problem
 
-- **Drivers** pay the day's boundary to the owner before a single fare, then diesel, and keep what is left. They cannot see riders running for them from side streets or a crowd across the road with no ride coming, and diesel can differ by about ₱5 a litre between stations on the same road.
-- **Commuters** do not know whether the next ride has a seat. A signboard shows only the two ends of a route. Off the main road they walk, or pay a tricycle, just to reach it, and on a long ride home they can doze off past their stop.
-- The system runs on human knowledge (barkers, *pakiusog*, *sabit*, passing riders to the jeep behind) that no app understands.
-
-## What Muse does
-
-SakaySightAI puts Meta's **Muse Wonder** (`muse-wonder-1.0`, through the Meta Model API) inside a 3D twin of Metro Manila's public transport as an agent. A driver or commuter asks in Taglish or English (spoken questions are transcribed by Meta's `muse-voice-transcribe-1.0`), Muse picks from about twenty tools the app runs, and it acts on the answer. Every number comes from a tool; an answer with a number Muse was not given is thrown away.
-
-| For drivers | For commuters |
+| Drivers | Commuters |
 | --- | --- |
-| **Which way pays:** prices the route and up to two ways round a jam in fares, diesel and minutes, draws them on the map, and drives the best one. Public streets only: OpenStreetMap private streets and gates are closed to jeepneys. | **How do I get there:** plans a trip across 626 routes, with changes and fares, and draws it. |
-| **Spread the fleet:** first come, first served across the whole fleet. Riders another jeepney reaches first are theirs, and a side street two jeepneys already take is full, so the next driver is sent another way that still pays. | **The jeep comes to my street:** when a jeepney going round a jam comes down your street, Muse tells you to wait there, saving the tricycle fare to the main road. |
-| **Riders running late:** sees who is coming from the side streets and holds at the stop for those who will make it (up to 2 minutes for a jeepney, 1 for a bus). | **Read this signboard:** reads a photo of a jeepney's board and checks whether the route passes your destination. |
-| **Pass riders on, go back:** hands the last riders to the jeepney behind and U-turns for a crowd nobody is coming for. | **I missed my ride:** plans again from where you stand, by the clock. |
-| **Diesel plan:** where to fill and how many litres for the rounds left, at the cheapest reachable station, and turns in there. | **Wake me at my stop:** with Automatic AI on, Muse speaks up unasked and wakes you before your stop. |
+| Start every day in debt: the boundary to the owner (₱700 for a jeepney, ₱1,500–2,500 for a UV Express, ₱5,500–7,500 for a bus) is due before the first fare. | Can't see inside a jeepney or bus until it stops: a seat, or a 40-minute stand? |
+| Crawl at about 11 km/h ([measured jeepney drive cycle](./docs/evidence-and-decision-math.md)), unable to see riders running from side streets or a crowd stranded across the road. | A signboard shows only the two ends of a route, out of 626 routes with no one map. |
+| Diesel can cost ₱5 a litre more at one station than at the next on the same road. | Off the main road, they walk or pay a tricycle (about ₱20) just to reach it. |
+| When every driver takes the same shortcut, the jam just moves. | They doze off on the long ride home and miss their stop. |
 
-**The 3-minute demo** shows ten of these as staged scenes: Which way pays, Spread the fleet, Rush hour on España (Manila), Riders running late, Pass riders on, How do I get there, Read this signboard (Cubao), The jeep comes to my street (Sampaloc), I missed my modern jeepney and Wake me at my stop.
+All of it runs on human knowledge (barkers, *pakiusog*, *sabit*, passing riders to the jeep behind) that no app understands. And it isn't only Manila: angkots, songthaews, shared autos, matatus and trotros carry much of the Global South the same way.
+
+## How Muse solves it
+
+Muse Wonder (`muse-wonder-1.0`, through the Meta Model API) is an agent, not a chatbot:
+
+- **It acts.** Each question comes with what that driver or commuter can see. Muse chains about twenty tools the app runs ([`core/agent`](./src/core/agent), [`agentTools.ts`](./src/app/agentTools.ts)), and the app carries out the decision.
+- **It sees and listens.** It reads a photo of a signboard. Meta's `muse-voice-transcribe-1.0` turns a driver's spoken question into text, so they never look at the screen.
+- **It speaks up first.** With **Automatic AI** on, Muse warns a driver about the road ahead, or wakes a commuter before their stop, without being asked.
+- **It can't make numbers up.** Fares, diesel, seats and minutes come from the tools; an answer with a number Muse wasn't given is thrown away.
+
+## 29 demo scenes, live
+
+Open **Demo scenes** in the Driver or Commuter tab. A scene rebuilds the twin at that moment, with its vehicles, riders and diesel, and puts the question in the Ask box. Muse answers live, from its tools. ★ marks the ten in the video.
+
+### For drivers (18)
+
+| Scene | The moment | What Muse does |
+| --- | --- | --- |
+| ★ **Which way pays?** | Jammed past Sampaguita: 6 students by the road, 8 riders on a side street | Draws the main road and two side streets with fares, diesel and minutes on each, and drives the one that pays: about ₱107 net against ₱42 straight on. Public streets only: gated subdivisions are closed. |
+| ★ **Spread the fleet** | The same jam, three jeepneys | First come, first served: riders and streets another jeepney already has are theirs, so Muse sends this one round another street that still pays. |
+| ★ **Rush hour on España** | Manila, 5:40 PM by UST; the jeepney ahead on the Sampaloc shortcut has seats for 8 of the 11 | Sends this one for the 3 who would be left behind. |
+| ★ **Riders running late** | Pulled in at Sampaguita, people 1–3 minutes away | Holds at the stop for those who make it within 2 minutes, then goes. |
+| ★ **Pass riders on, go back** | 3 riders left; 8 stranded across the road with no jeepney coming | Hands the 3 to the jeepney behind at Amparo and U-turns for the 8. |
+| **Diesel plan, Fairview to Quiapo** | A quarter of a tank, 3 rounds left | Skips the Shell and Petron ahead for the Flying V, ₱5 a litre cheaper, for only the litres needed. The jeepney turns in there. |
+| **Jam ahead, a way round?** | Crawling on a packed road | Takes the street alongside, back on the route before Mountain View. |
+| **Not enough seats** | 9 waiting, 2 seats left | Says how many it cannot take. |
+| **Someone waving by the road** | Automatic AI on | Says "pull over", unasked. |
+| **Modern jeepney: stop or pass?** | Riders say in the app where they wait and get off | Whether the next stop is worth stopping at. |
+| **Modern jeepney: a buntis and seniors next** | A pregnant rider, a senior and a PWD waiting | Ask riders to make room (*pakiusog*), give them time, keep the seat beside her free. |
+| **UV Express: alis na o hintay?** | 12 on, 2 seats left, more on their way | Weighs the fares of who is coming against the minutes of waiting, in pesos. |
+| **UV Express: how far to the boundary?** | Mid-shift | What is left to cover today and how many trips that takes, spoken. |
+| **Bus: nobody at the next stop** | Nobody waiting, nobody getting off | Pass, and save the diesel a big bus burns stopping. |
+| **Buses bunched together** | Three buses nose to tail | Drop back and spread out; don't race them. |
+| **Bus low on diesel** | 12% in the tank | The stations ahead on its side, with DOE prices, and where to fill. |
+| **A bus keeps to its stops** | Someone waves by the road | A bus does not pull over, unlike a jeepney. |
+| **A bus waits one minute** | 3 people running for it | A bus holds up the lane, so it waits 1 minute, not 2: the 2 who make it board. |
+
+### For commuters (11)
+
+Each card in the app says who it is for (new to the city, or *sanay na*, daily riders) and why it helps.
+
+| Scene | Who it's for | What Muse does |
+| --- | --- | --- |
+| ★ **How do I get there?** | New to the city: students, workers from the province, OFWs home, visitors | Picks the rides, the changes and the fare across 626 routes, and draws them. |
+| ★ **Read this signboard** (Cubao) | New to the area, and the hard of hearing | Reads a photo of a "Cubao – Proj. 4" board and checks whether it passes Quirino Memorial Medical Center. |
+| ★ **The jeep comes to my street** (Sampaloc) | Sanay na, living off the main road | Four neighbours wait on their own street for a jeepney going round the jam: no tricycle, ₱80 kept. |
+| ★ **I missed my modern jeepney** | Sanay na, whose ride just left | Plans again from where you stand, with the next ride by the clock. |
+| ★ **Wake me at my stop** | Sanay na, tired on the long ride home | Wakes you a few minutes before your stop, unasked. |
+| **Will the bus have a seat?** | Seniors, parents with a child, anyone with bags | Skip the packed bus: the next one has a seat. |
+| **Long queue for a modern jeepney** | The rush-hour line at a terminal | Counts the 14 ahead against seats and standing room: wait, or go another way. |
+| **A roomy jeep for a buntis** | Pregnant riders, PWD, seniors | Take the next one, with room to sit, and tells the driver. |
+| **My bus fare as a senior** | Seniors and those with them | The LTFRB fare with the 20% discount the law gives. |
+| **Wave one down by the road** | Barangays far from a stop | The jeepney coming with a seat pulls over where you stand. |
+| **Crossing to the stop** | Parents, students, anyone new | Sends you to the zebra crossing; the jeepney coming stops there for you. |
 
 **Real:** OpenStreetMap streets and buildings, 626 routes from the 2015 DOTC data, LTFRB fares, DOE diesel prices, phone GPS, and Muse's tools and answers. **Simulated:** riders, traffic, tank levels and earnings.
-
-## Four vehicle types, one connected transport experience
-
-| Vehicle type            | How it is represented in the current simulator                                                                                                     |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Traditional jeepney** | Traditional body and cabin layout, rear-entry passenger movement, a virtual cabin camera and a dedicated fare rule.                                |
-| **Modern jeepney**      | A Class 2-style vehicle with its own capacity, side-door boarding, virtual door-camera placement and fare rule.                                    |
-| **UV Express**          | A van layout and UV route/service behaviour: boarding at terminals in this model, with drop-offs at modelled route stops and a separate fare rule. |
-| **Bus**                 | A city-bus layout on bus routes, front boarding/middle alighting, virtual door cameras and a separate fare rule.                                   |
-
-These vehicle types share planning, passenger and driver interfaces, with vehicle-specific capacity and service rules. The default Tungko–Fairview demonstration and several research examples focus on jeepneys; they do not define the whole product. Camera deployment and fuel/economic calibration still need validation for each vehicle type. The table describes the software model, not universal operating rules for every real route.
-
-## The moments we want to improve
-
-**“May paparating pang pasahero?”** A driver has empty seats while people are walking or taking a tricycle toward the next stop. SakaySightAI's demo shows who is approaching, how far away they are and whether they are expected before the vehicle—so the driver can recheck the situation on arrival.
-
-**“Aabot ba ako—and may upuan pa?”** The nearest vehicle is not always the one a commuter can board. The demo considers their arrival at the stop, passengers ahead in the queue and estimated seats after drop-offs.
-
-**“Saan mas sulit magpakarga?”** A lower diesel price matters only if the station is usable and reachable. The driver view shows stations ahead on the route, dated price estimates, simulated tank information and the possible saving on a top-up.
-
-**“May mas malapit bang sakayan?”** The app compares mapped boarding stops and walking/tricycle access. Our next-step proposal is to help a commuter reach a verified pickup point from a secondary road when it is closer, the service permits boarding there and the vehicle can still be caught. Dynamic roadside rendezvous is a proposed extension, not a completed feature.
 
 ## A product prototype with a path to the road
 
@@ -69,7 +91,7 @@ The software includes browser GPS tracking, planning logic and Meta API integrat
 
 ## What Meta AI adds
 
-**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the Driver and Commuter panels list 29 moments made ready (18 for drivers, 11 for commuters, across jeepneys, modern jeepneys, UV Express and buses; each commuter card says who it is for and why it helps). Pick one and the twin is rebuilt at that time, with those vehicles, riders and diesel, and the line to say on the mic waiting in the Ask box. Muse answers from its tools as anywhere else; only the setting is staged.
+**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the 29 listed [above](#29-demo-scenes-live). Only the setting is staged; Muse answers from its tools as anywhere else.
 
 Ask about the situation in your own words. Meta transcription handles recorded questions. **The Sakay Agent** is Muse with tools ([`api/agent.ts`](./api/agent.ts), [`core/agent`](./src/core/agent)): it decides what to look up and acts on the app, while every number comes from the simulation.
 
@@ -100,7 +122,7 @@ Our inputs combine OpenStreetMap geography, historical transit information, tran
 
 It also works through the decisions rather than promising a universal savings percentage:
 
-- **Approaching passengers:** additional fares minus waiting fuel, operating costs and lost earnings elsewhere; onboard passenger delay counts too. A bounded roadside hold is proposed, not currently automated.
+- **Approaching passengers:** additional fares minus waiting fuel, operating costs and lost earnings elsewhere; onboard passenger delay counts too. Muse holds at the stop for riders who will make it, up to 2 minutes for a jeepney and 1 for a bus (the Riders running late scenes).
 - **Cheaper diesel:** purchase-price savings minus additional costs, subject to fuel reserve and on-route reachability.
 - **A closer pickup:** walking time plus crossing/access time and an uncertainty buffer must fit within the vehicle's arrival time and its boarding rules.
 
@@ -125,7 +147,14 @@ For a quick tour: inspect a vehicle on a supported route in **Live twin**, compa
 
 We welcome collaboration with drivers, cooperatives, operators and hardware partners who can help validate one corridor. Funding would support camera kits and installation, phone compatibility, connectivity, labelled test footage and field evaluation. The [pilot plan](./docs/evidence-and-decision-math.md#a-practical-pilot-and-funding-path) sets out what must be measured before claiming real-world impact.
 
-**Hackathon disclosure:** the author reused a pre-existing 3D foundation. New SakaySightAI transport features and integrations are described in [Notes.md](./Notes.md), alongside recorded development dates and remaining provenance details. Existing libraries, geographic data and the reused foundation are not claimed as newly authored work.
+## Hackathon disclosure
+
+- **Built during the hackathon (October 27 – November 4, 2026):** the SakaySightAI transport app: OpenStreetMap mapping, the fleet and rider simulation, the driver and commuter apps, the Muse agent and its tools, the 29 demo scenes, phone tracking, and the sensor and profit labs. Dates and details: [Notes.md](./Notes.md#hackathon-contribution-provenance-and-ai-role).
+- **Reused:** a 3D foundation from the author's earlier code. It is not claimed as hackathon work.
+- **Open source and data:** the libraries in [`package.json`](./package.json), used under their licences; map data © OpenStreetMap contributors (ODbL), served by OpenFreeMap; routes from the 2015 DOTC data; LTFRB fares and DOE diesel prices.
+- **Coding help:** AI coding assistants were used while building. The idea, the design, the decisions and the submission are the author's.
+- **Demo video:** recorded from the running app, with Muse's live answers. Voice-over by ElevenLabs (`eleven_v4`). The signboards in the Read this signboard scenes are drawn pictures, not photos.
+- **Simulated:** riders, traffic, tank levels and earnings. No field pilot has been run yet.
 
 <details>
 <summary><strong>Developer guide: architecture, controls, setup and verification</strong></summary>
