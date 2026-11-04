@@ -32,7 +32,7 @@ import { existsSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
-const USER_AGENT = 'CommuteAI hackathon prototype (fuel stations script)';
+const USER_AGENT = 'SakaySightAI hackathon prototype (fuel stations script)';
 /** Stations within this of the route are shown: the area the map covers around it. */
 const AREA_M = 4000;
 /** --metro-manila: the network's area, with San Jose del Monte and the edges of Rizal, Cavite and Bulacan. */

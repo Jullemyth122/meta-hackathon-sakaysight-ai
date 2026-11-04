@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>SakaySightAI · Sakay na!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Never held up for a font: the loading screen has to paint first. -->
+    <link
+      rel="stylesheet"
+      href="@@FONTS@@"
+      media="print"
+      onload="this.media = 'all'"
+    />
+    <link rel="preload" as="image" href="/splash/far.webp" />
+    <link rel="preload" as="image" href="/splash/mid.webp" />
+    <link rel="preload" as="image" href="/splash/street.webp" />
+    <link rel="preload" as="image" href="/splash/poles.webp" />
+    <link rel="preload" as="image" href="/splash/viaduct.webp" />
+    <link rel="preload" as="image" href="/splash/clouds.webp" />
+    <!--
+      The loading screen (src/ui/Splash.tsx lifts it). Here and not in the
+      bundle so it paints before any script has loaded. Everything that moves
+      is a CSS transform or opacity on a whole layer, which the compositor runs
+      by itself, so the road keeps rolling through the long frames while
+      shaders compile. Scenery that scrolls is images: as vectors, each piece
+      scrolling into view is drawn from scratch and slows the app down.
+      Built by scripts/splash/build.py: change the scene there, not here.
+    -->
+    <style id="splash-style">
+      html {
+        overflow: hidden;
+        background: #0a1020;
+      }
+      #splash {
+        --road: 140px;
+        --walk: 15px;
+        --sink: 0px;
+        --share: 0;
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: clamp(32px, 9vh, 96px) 24px 0;
+        overflow: hidden;
+        color: #f4f6fb;
+        font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        background: #0a1020;
+        /* If the app itself never loads, nobody stays shut out behind this. */
+        animation: splash-give-up 0.6s 90s forwards;
+      }
+      #splash.is-leaving {
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.7s ease 0.3s;
+      }
+      @keyframes splash-give-up {
+        to {
+          opacity: 0;
+          visibility: hidden;
+        }
+      }
+
+      .sp-world {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      /* Measured up from the horizon, so the dusk sits right on any screen. */
+      .sp-sky {
+        position: absolute;
+        inset: 0 0 var(--road) 0;
+        background: linear-gradient(
+          0deg,
+          #ffd38a 0,
+          #fbb163 46px,
+          #ee8652 104px,
+          #c9626a 188px,
+          #8a5290 276px,
+          #574a8f 356px,
+          #2f3676 470px,
+          #182456 620px,
+          #0d1636 800px,
+          #070c1e 100%
+        );
+      }
+      .sp-stars {
+        position: absolute;
+        top: 6vh;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        border-radius: 50%;
+        color: #fff;
+        box-shadow:
+          8vw 3vh, 19vw 11vh, 27vw 2vh, 36vw 8vh, 44vw 19vh, 58vw 4vh, 63vw 15vh, 71vw 7vh,
+          82vw 12vh, 91vw 3vh, 96vw 17vh, 13vw 21vh, 75vw 24vh, 31vw 26vh, 4vw 16vh, 52vw 25vh,
+          86vw 22vh, 22vw 28vh;
+        animation: sp-twinkle 3.4s ease-in-out infinite alternate;
+      }
+      @keyframes sp-twinkle {
+        from {
+          opacity: 0.3;
+        }
+        to {
+          opacity: 0.8;
+        }
+      }
+      .sp-bloom {
+        position: absolute;
+        bottom: calc(var(--road) - 120px);
+        left: calc(70% - 560px);
+        width: 1120px;
+        height: 640px;
+        background: radial-gradient(
+          closest-side,
+          rgb(255 214 140 / 0.62),
+          rgb(255 170 110 / 0.3) 34%,
+          rgb(255 140 110 / 0.1) 66%,
+          transparent
+        );
+      }
+      .sp-sun {
+        position: absolute;
+        bottom: calc(var(--road) + 74px - var(--sink));
+        left: calc(70% - 36px);
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: radial-gradient(closest-side, #fff8df 80%, rgb(255 226 160 / 0.7) 92%, transparent);
+      }
+      .sp-layer {
+        position: absolute;
+        left: 0;
+        display: block;
+        will-change: transform;
+        animation: sp-scroll linear infinite;
+      }
+      @keyframes sp-scroll {
+        to {
+          transform: translate3d(calc(-1 * var(--tile)), 0, 0);
+        }
+      }
+      .sp-clouds {
+        background: url('/splash/clouds.webp') 0 0 / 1800px 300px repeat-x;
+        --tile: 1800px;
+        bottom: calc(var(--road) + 120px);
+        width: calc(100% + 1800px);
+        height: 300px;
+        animation-duration: 360s;
+      }
+      .sp-far {
+        background: url('/splash/far.webp') 0 0 / 2400px 320px repeat-x;
+        --tile: 2400px;
+        bottom: calc(var(--road) + var(--walk) - var(--sink));
+        width: calc(100% + 2400px);
+        height: 320px;
+        animation-duration: 266s;
+      }
+      .sp-mid {
+        background: url('/splash/mid.webp') 0 0 / 2400px 320px repeat-x;
+        --tile: 2400px;
+        bottom: calc(var(--road) + var(--walk) - var(--sink));
+        width: calc(100% + 2400px);
+        height: 320px;
+        animation-duration: 100s;
+      }
+      .sp-train {
+        position: absolute;
+        bottom: calc(var(--road) + var(--walk) + 106px - var(--sink));
+        left: 0;
+        display: block;
+        width: 326px;
+        height: 30px;
+        will-change: transform;
+        transform: translate3d(110vw, 0, 0);
+        animation: sp-train 24s linear infinite;
+      }
+      @keyframes sp-train {
+        0% {
+          transform: translate3d(110vw, 0, 0);
+        }
+        32%,
+        100% {
+          transform: translate3d(-380px, 0, 0);
+        }
+      }
+      .sp-viaduct {
+        background: url('/splash/viaduct.webp') 0 0 / 840px 200px repeat-x;
+        --tile: 840px;
+        bottom: calc(var(--road) + var(--walk) - var(--sink));
+        width: calc(100% + 840px);
+        height: 200px;
+        animation-duration: 13.1s;
+      }
+      .sp-street {
+        background: url('/splash/street.webp') 0 0 / 2400px 170px repeat-x;
+        --tile: 2400px;
+        bottom: calc(var(--road) + var(--walk) - 1px);
+        width: calc(100% + 2400px);
+        height: 170px;
+        animation-duration: 11.7s;
+      }
+      .sp-road {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: var(--road);
+        overflow: hidden;
+        background: linear-gradient(
+          180deg,
+          #4a3a48 0,
+          #2c2a3c 10%,
+          #1c1d2c 42%,
+          #11131d 78%,
+          #0a0b13 100%
+        );
+      }
+      .sp-road b {
+        position: absolute;
+        top: 13%;
+        right: 0;
+        left: 0;
+        height: 2px;
+        background: rgb(240 236 222 / 0.5);
+      }
+      .sp-road i {
+        position: absolute;
+        top: 52%;
+        left: 0;
+        width: calc(100% + 120px);
+        height: 4px;
+        background: repeating-linear-gradient(90deg, #efe3bd 0 64px, transparent 64px 120px);
+        opacity: 0.72;
+        will-change: transform;
+        animation: sp-dashes 0.42s linear infinite;
+      }
+      @keyframes sp-dashes {
+        to {
+          transform: translate3d(-120px, 0, 0);
+        }
+      }
+      .sp-poles {
+        background: url('/splash/poles.webp') 0 0 / 900px 460px repeat-x;
+        --tile: 900px;
+        bottom: calc(var(--road) - 160px);
+        width: calc(100% + 900px);
+        height: 460px;
+        animation-duration: 3.88s;
+      }
+
+      .sp-jeep {
+        position: absolute;
+        bottom: calc(var(--road) * 0.14);
+        left: 50%;
+        width: clamp(320px, 33vw, 560px);
+        aspect-ratio: 480 / 176;
+        transform: translateX(-50%);
+        transition: transform 0.95s cubic-bezier(0.55, 0, 0.9, 0.5);
+      }
+      #splash.is-leaving .sp-jeep {
+        transform: translateX(calc(50vw + 62%));
+      }
+      .sp-shadow {
+        position: absolute;
+        right: 4%;
+        bottom: -1%;
+        left: 1%;
+        height: 11%;
+        border-radius: 50%;
+        background: rgb(2 3 8 / 0.7);
+        filter: blur(6px);
+      }
+      .sp-body {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        will-change: transform;
+        animation: sp-bob 0.38s ease-in-out infinite alternate;
+      }
+      @keyframes sp-bob {
+        from {
+          transform: translateY(0);
+        }
+        to {
+          transform: translateY(-1.4px);
+        }
+      }
+      .sp-wheel {
+        position: absolute;
+        top: 69.3%;
+        display: block;
+        width: 10%;
+        aspect-ratio: 1;
+        will-change: transform;
+        animation: sp-spin 0.44s linear infinite;
+      }
+      .sp-wheel--back {
+        left: 21.25%;
+      }
+      .sp-wheel--front {
+        left: 73.75%;
+      }
+      @keyframes sp-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .sp-puff {
+        position: absolute;
+        top: 79%;
+        left: 3%;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: rgb(206 212 230 / 0.42);
+        filter: blur(2.5px);
+        opacity: 0;
+        animation: sp-puff 1.6s ease-out infinite;
+      }
+      .sp-puff:nth-of-type(3) {
+        animation-delay: 0.53s;
+      }
+      .sp-puff:nth-of-type(4) {
+        animation-delay: 1.06s;
+      }
+      @keyframes sp-puff {
+        from {
+          opacity: 0.7;
+          transform: translate(0, 0) scale(0.7);
+        }
+        to {
+          opacity: 0;
+          transform: translate(-110px, -24px) scale(3.2);
+        }
+      }
+      .sp-vignette {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(125% 95% at 50% 42%, transparent 58%, rgb(3 5 14 / 0.55) 100%);
+      }
+      .sp-grain {
+        position: absolute;
+        inset: 0;
+        opacity: 0.05;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .7 0'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23g)'/%3E%3C/svg%3E");
+      }
+
+      .sp-head {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: min(600px, 100%);
+        text-shadow: 0 1px 10px rgb(8 10 30 / 0.55);
+      }
+      .sp-brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: clamp(30px, 4.4vw, 46px);
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.025em;
+        text-shadow: 0 2px 22px rgb(4 7 20 / 0.6);
+      }
+      .sp-mark {
+        display: grid;
+        gap: 4px;
+        width: 42px;
+      }
+      .sp-mark i {
+        height: 8px;
+        border-radius: 4px;
+        background: #7b97ff;
+      }
+      .sp-mark i:nth-child(2) {
+        width: 70%;
+        background: #f06a62;
+      }
+      .sp-mark i:nth-child(3) {
+        width: 85%;
+        background: #ffc83d;
+      }
+      .sp-tag {
+        margin: 12px 0 0;
+        color: #b9c2d9;
+        font-size: 15px;
+        line-height: 1.4;
+        text-align: center;
+      }
+
+      .sp-rail {
+        position: relative;
+        width: 100%;
+        margin-top: clamp(40px, 7vh, 60px);
+      }
+      .sp-line {
+        position: relative;
+        height: 4px;
+        border-radius: 2px;
+        background: rgb(255 255 255 / 0.14);
+      }
+      .sp-fill {
+        position: absolute;
+        inset: 0;
+        border-radius: 2px;
+        background: linear-gradient(90deg, #ff8f3c, #ffc83d);
+        box-shadow: 0 0 14px rgb(255 190 80 / 0.5);
+        transform: scaleX(var(--share));
+        transform-origin: 0 50%;
+        transition: transform 0.8s cubic-bezier(0.22, 0.8, 0.3, 1);
+      }
+      .sp-rider {
+        position: absolute;
+        inset: -19px 0 auto;
+        height: 16px;
+        transform: translateX(calc(var(--share) * 100%));
+        transition: transform 0.8s cubic-bezier(0.22, 0.8, 0.3, 1);
+      }
+      .sp-rider svg {
+        position: absolute;
+        bottom: 0;
+        left: -32px;
+        display: block;
+        width: 42px;
+        height: 16px;
+      }
+      /* Until the scripts arrive to say how far along things really are. */
+      #splash:not(.is-live) .sp-fill {
+        animation: sp-creep 9s cubic-bezier(0.1, 0.7, 0.3, 1) forwards;
+      }
+      #splash:not(.is-live) .sp-rider {
+        animation: sp-creep-rider 9s cubic-bezier(0.1, 0.7, 0.3, 1) forwards;
+      }
+      @keyframes sp-creep {
+        from {
+          transform: scaleX(0);
+        }
+        to {
+          transform: scaleX(0.2);
+        }
+      }
+      @keyframes sp-creep-rider {
+        from {
+          transform: translateX(0);
+        }
+        to {
+          transform: translateX(20%);
+        }
+      }
+      .sp-stops {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .sp-stops li {
+        position: relative;
+        padding-top: 16px;
+        color: #97a1bb;
+        font-size: 13px;
+        font-weight: 500;
+        text-align: right;
+        transition: color 0.4s;
+      }
+      .sp-stops li::after {
+        content: '';
+        position: absolute;
+        top: -9px;
+        right: -7px;
+        box-sizing: border-box;
+        width: 14px;
+        height: 14px;
+        border: 3px solid #48557e;
+        border-radius: 50%;
+        background: #101a36;
+        transition:
+          background-color 0.4s,
+          border-color 0.4s;
+      }
+      .sp-stops li.is-on {
+        color: #fff;
+        font-weight: 600;
+      }
+      .sp-stops li.is-on::after {
+        border-color: #ffc83d;
+        animation: sp-next 1.1s ease-in-out infinite alternate;
+      }
+      .sp-stops li.is-done {
+        color: #ffd778;
+      }
+      .sp-stops li.is-done::after {
+        border-color: #ffc83d;
+        background: #ffc83d;
+      }
+      @keyframes sp-next {
+        to {
+          transform: scale(1.3);
+        }
+      }
+      .sp-now {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        width: 100%;
+        margin: 20px 0 0;
+        font-size: 16px;
+        font-weight: 500;
+      }
+      .sp-now b {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .sp-tips {
+        position: relative;
+        width: 100%;
+        height: 40px;
+        margin: 10px 0 0;
+        padding: 0;
+        color: #aab4cd;
+        font-size: 14px;
+        line-height: 20px;
+        list-style: none;
+      }
+      .sp-tips li {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        animation: sp-tip 18s ease-in-out infinite;
+      }
+      .sp-tips li:nth-child(2) {
+        animation-delay: 6s;
+      }
+      .sp-tips li:nth-child(3) {
+        animation-delay: 12s;
+      }
+      @keyframes sp-tip {
+        0% {
+          opacity: 0;
+        }
+        4%,
+        30% {
+          opacity: 1;
+        }
+        34%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @media (max-height: 800px) {
+        #splash {
+          --road: 110px;
+          --sink: 70px;
+        }
+        .sp-tag,
+        .sp-tips,
+        .sp-stops li {
+          color: #dde2ef;
+        }
+      }
+      @media (max-height: 620px) {
+        #splash {
+          --sink: 150px;
+        }
+        .sp-tag,
+        .sp-tips {
+          display: none;
+        }
+      }
+      @media (max-width: 560px) {
+        .sp-stops li,
+        .sp-stops li.is-on,
+        .sp-stops li.is-done {
+          color: transparent;
+        }
+        .sp-tips {
+          height: 60px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sp-stars,
+        .sp-layer,
+        .sp-road i,
+        .sp-body,
+        .sp-wheel,
+        .sp-puff,
+        .sp-train,
+        .sp-stops li.is-on::after {
+          animation: none;
+        }
+        .sp-puff,
+        .sp-train {
+          display: none;
+        }
+        .sp-jeep {
+          transition: none;
+        }
+        .sp-tips li:first-child {
+          opacity: 1;
+          animation: none;
+        }
+        .sp-tips li:not(:first-child) {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div
+      id="splash"
+      role="progressbar"
+      aria-label="Loading SakaySightAI"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="0"
+    >
+      <div class="sp-world" aria-hidden="true">
+        <div class="sp-sky"></div>
+        <i class="sp-stars"></i>
+        <div class="sp-bloom"></div>
+        <div class="sp-sun"></div>
+        <i class="sp-layer sp-clouds"></i>
+        <i class="sp-layer sp-far"></i>
+        <i class="sp-layer sp-mid"></i>
+        <svg class="sp-train" viewBox="0 0 326 30">@@TRAIN@@</svg>
+        <i class="sp-layer sp-viaduct"></i>
+        <i class="sp-layer sp-street"></i>
+        <div class="sp-road"><b></b><i></i></div>
+        <i class="sp-layer sp-poles"></i>
+        <div class="sp-jeep">
+          <i class="sp-shadow"></i>
+          <i class="sp-puff"></i>
+          <i class="sp-puff"></i>
+          <i class="sp-puff"></i>
+          <svg class="sp-body" viewBox="0 0 480 176">@@JEEP@@</svg>
+          <svg class="sp-wheel sp-wheel--back" viewBox="-24 -24 48 48">@@WHEEL@@</svg>
+          <svg class="sp-wheel sp-wheel--front" viewBox="-24 -24 48 48">@@WHEEL@@</svg>
+        </div>
+        <div class="sp-vignette"></div>
+        <div class="sp-grain"></div>
+      </div>
+      <div class="sp-head">
+        <div class="sp-brand">
+          <span class="sp-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          SakaySightAI
+        </div>
+        <p class="sp-tag">Metro Manila's public transport, live in 3D</p>
+        <div class="sp-rail" aria-hidden="true">
+          <div class="sp-line"><i class="sp-fill"></i></div>
+          <div class="sp-rider"><svg viewBox="0 0 42 16">@@MINI@@</svg></div>
+          <ol class="sp-stops">
+            <li class="is-on">Engine</li>
+            <li>Routes</li>
+            <li>Map</li>
+            <li>Traffic</li>
+          </ol>
+        </div>
+        <p class="sp-now">
+          <span id="splash-now">Starting the 3D engine</span><b id="splash-share"></b>
+        </p>
+        <ul class="sp-tips">
+          <li>Wait anywhere safe by the road: pick your spot, and the jeepney pulls over for you.</li>
+          <li>Ride along on any vehicle on the map, from the driver's seat or inside with the passengers.</li>
+          <li>Crossing the road? Traffic on both sides waits for you.</li>
+        </ul>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

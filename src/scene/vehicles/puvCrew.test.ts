@@ -29,11 +29,59 @@ function* poses(m: RiderMotion): Generator<RiderPose> {
 }
 
 describe('riders in a modern jeepney, UV Express and bus', () => {
-  it.each(KINDS)('%s: every seat taken once, in an order that covers them all', (kind) => {
+  it.each(KINDS)('%s: every place taken once, in an order that covers them all', (kind) => {
     const L = puvLayout(kind);
-    expect(L.seats.length).toBe(VEHICLES[kind].seats);
+    expect(L.seats.length).toBe(VEHICLES[kind].seats + VEHICLES[kind].standing);
     expect([...L.seatOrder].sort((a, b) => a - b)).toEqual(L.seats.map((_, i) => i));
   });
+
+  it.each(KINDS)('%s: nobody stands until every seat is taken', (kind) => {
+    const L = puvLayout(kind);
+    const seated = L.seatOrder.slice(0, VEHICLES[kind].seats);
+    expect(seated.every((k) => !L.seats[k]!.stands)).toBe(true);
+  });
+
+  it('packed, a modern jeepney carries 32 and a bus 80; a UV Express has no standing', () => {
+    expect(puvLayout('modern').seats.length).toBe(32);
+    expect(puvLayout('bus').seats.length).toBe(80);
+    expect(puvLayout('uv').seats.some((s) => s.stands)).toBe(false);
+  });
+
+  it.each(['modern', 'bus'] as const)(
+    '%s: the standing places fill from the far end, so nobody pushes past anyone',
+    (kind) => {
+      const L = puvLayout(kind);
+      const door = (VEHICLES[kind].doors[0]!.x0 + VEHICLES[kind].doors[0]!.x1) / 2;
+      const away = L.seatOrder
+        .slice(VEHICLES[kind].seats)
+        .map((k) => Math.abs(L.seats[k]!.x - door));
+      expect(away).toEqual([...away].sort((a, b) => b - a));
+    },
+  );
+
+  it.each(['modern', 'bus'] as const)(
+    '%s: from any standing place to any seat, along the aisle and into it',
+    (kind) => {
+      const L = puvLayout(kind);
+      const seats = L.seatOrder.slice(0, VEHICLES[kind].seats);
+      const standing = L.seatOrder.slice(VEHICLES[kind].seats);
+      const stood = newRiderPose();
+      const sat = newRiderPose();
+      for (const from of standing)
+        for (const to of seats) {
+          const m = L.takeSeat(from, to);
+          const first = m.poseAt(0, newRiderPose());
+          L.seated(from, stood);
+          expect(Math.hypot(first.x - stood.x, first.z - stood.z)).toBeLessThan(0.01);
+          expect(first.hold).toBe(1);
+          const end = m.poseAt(m.duration, newRiderPose());
+          L.seated(to, sat);
+          expect(Math.hypot(end.x - sat.x, end.y - sat.y, end.z - sat.z)).toBeLessThan(0.01);
+          expect(end.sit).toBe(1);
+          expect(end.hold).toBe(0);
+        }
+    },
+  );
 
   it.each(KINDS)(
     '%s: in through the door to each seat and out again, never through a wall or another seat',
@@ -43,7 +91,7 @@ describe('riders in a modern jeepney, UV Express and bus', () => {
       const L = puvLayout(kind);
       const half = S.widthM / 2;
       const inner = half - WALL;
-      const pads = L.seats.map((s) => cushion(s, half));
+      const pads = L.seats.filter((s) => !s.stands).map((s) => cushion(s, half));
       const atDoor = (x: number) => S.doors.some((d) => x > d.x0 + 0.05 && x < d.x1 - 0.05);
       // Where the floor starts, in from the stairs (bodyKit: 0.28 m a step, 0.2 m rise at most).
       const floorEdge = Math.min(
@@ -92,7 +140,8 @@ describe('riders in a modern jeepney, UV Express and bus', () => {
           const end = board.poseAt(board.duration, newRiderPose());
           const sat = L.seated(k, newRiderPose());
           expect(Math.hypot(end.x - sat.x, end.y - sat.y, end.z - sat.z)).toBeLessThan(0.01);
-          expect(end.sit).toBe(1);
+          expect(end.sit).toBe(L.seats[k]!.stands ? 0 : 1);
+          expect(end.hold).toBe(L.seats[k]!.stands ? 1 : 0);
           expect(L.isInside(end)).toBe(true);
         }
         const off = L.alight(k);

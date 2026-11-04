@@ -3,7 +3,8 @@ import { DEFAULT_SCENARIO } from '@/core/fleet/scenario';
 import { defaultRoute } from '@/core/geo/routes';
 import { fareFor } from '@/core/fare';
 import { riderDiscounted } from '@/core/people/passengerSystem';
-import { clockText, dayMoney } from './earnings';
+import { FUEL } from '@/core/vehicles/specs';
+import { BOUNDARY_RANGE_PHP, clockText, dayMoney } from './earnings';
 import { TwinRuntime } from './twinRuntime';
 
 describe('a jeepney’s money today, live from the twin', () => {
@@ -40,18 +41,26 @@ describe('a jeepney’s money today, live from the twin', () => {
     expect(eligible / 20_000).toBeLessThan(0.35);
   });
 
-  it('works out each jeepney’s money the same way everywhere: fares less diesel and the day’s costs', () => {
+  it('works out each vehicle’s money the same way everywhere, by its kind: fares less diesel and the day’s costs', () => {
     const twin = new TwinRuntime(defaultRoute(), undefined, DEFAULT_SCENARIO);
     for (let i = 0; i < 600 * 5; i++) twin.step(0.1, i * 100);
     for (const v of twin.fleet.vehicles) {
       const m = dayMoney(v);
       expect(m.fares).toBeCloseTo(v.day.fareCentavos / 100, 9);
       expect(m.km).toBeCloseTo(v.day.metres / 1000, 9);
-      // 6 km a litre moving, 0.8 L an hour idling.
-      expect(m.litres).toBeCloseTo(m.km / 6 + (v.day.idleS / 3600) * 0.8, 9);
-      // ₱700 boundary, or ₱200 upkeep for an owner-driver; ₱100 other costs.
-      expect(m.fixed).toBe(v.owner ? 300 : 800);
-      expect(m.boundary).toBe(v.owner ? 0 : 700);
+      // Its own kind's diesel: a jeepney 6 km a litre moving, 0.8 L an hour idling.
+      const fuel = FUEL[v.kind ?? 'jeepney'];
+      expect(m.litres).toBeCloseTo(m.km / fuel.kmPerL + (v.day.idleS / 3600) * fuel.idleLPerH, 9);
+      // ₱700 boundary for a jeepney, each other kind within its range; or ₱200
+      // upkeep for an owner-driver; ₱100 other costs.
+      const kind = v.kind ?? 'jeepney';
+      const boundary = kind === 'jeepney' ? 700 : m.boundary;
+      if (kind !== 'jeepney' && !v.owner) {
+        expect(boundary).toBeGreaterThanOrEqual(BOUNDARY_RANGE_PHP[kind][0]);
+        expect(boundary).toBeLessThanOrEqual(BOUNDARY_RANGE_PHP[kind][1]);
+      }
+      expect(m.boundary).toBe(v.owner ? 0 : boundary);
+      expect(m.fixed).toBe(v.owner ? 300 : boundary + 100);
       expect(m.net).toBeCloseTo(m.fares - m.diesel - m.fixed, 9);
     }
   });

@@ -21,23 +21,81 @@ import {
   projectPerson,
 } from '../doorway/cabinCamera';
 import { MIRROR_LAYOUT, PipRenderer } from '../doorway/PipRenderer';
+import { MAP_LAYER } from '../map/flatLayers';
 import { createDoorCamera, doorCameras } from '../vehicles/doorCamera';
-import type { VehicleKind } from '@/core/vehicles/specs';
+import { DoorCounting } from '../vehicles/doorCounting';
+import { VEHICLES, type FleetKind, type VehicleKind } from '@/core/vehicles/specs';
 import { REAR_X } from '../jeepney/jeepneyGeometry';
 import { riderSeed } from '../jeepney/crew';
 import { appearance, HEAD_CENTRE_Y } from '../people/personRig';
 import { fleetPose } from './lanes';
 import { useScaledPose } from './viewScale';
 
-/**
- * The rear-view mirror while riding in the front seat: what is behind the
- * jeepney (someone running for it, the jeepney behind), seen from the back of
- * the roof, since a cab mirror would only show the cabin full of riders.
- */
-const MIRROR_EYE = new Vector3(REAR_X - 0.2, 2.6, 0);
-const MIRROR_LOOK = new Vector3(REAR_X - 30, 0.6, 0);
 /** Narrow vertically: the strip is about 3.4 times wider than tall (≈80° across). */
 const MIRROR_VFOV = 28;
+/** The mirror's eye: this far behind the vehicle and above its roof (metres). */
+const MIRROR_BEHIND_M = 0.2;
+const MIRROR_ABOVE_M = 0.1;
+/** It looks this far back along the road, down to this height (metres). */
+const MIRROR_LOOK_BACK_M = 30;
+const MIRROR_LOOK_Y = 0.6;
+const JEEPNEY_HEIGHT_M = 2.5;
+
+/**
+ * Where the rear-view mirror sees from, on a vehicle of `kind` (its own frame):
+ * what is behind it (someone running for it, the vehicle behind), from the
+ * back of the roof, since a cab mirror would only show the cabin full of riders.
+ */
+export function mirrorView(kind: FleetKind): { eye: Vector3; look: Vector3 } {
+  const rear = kind === 'jeepney' ? REAR_X : -VEHICLES[kind].lengthM / 2;
+  const height = kind === 'jeepney' ? JEEPNEY_HEIGHT_M : VEHICLES[kind].heightM;
+  const x = rear - MIRROR_BEHIND_M;
+  return {
+    eye: new Vector3(x, height + MIRROR_ABOVE_M, 0),
+    look: new Vector3(x - MIRROR_LOOK_BACK_M, MIRROR_LOOK_Y, 0),
+  };
+}
+
+/** The front seat's rear-view mirror on simulated vehicle `index`, for every kind. */
+function useMirror(index: number, kind: FleetKind, frontSeat: boolean): PerspectiveCamera {
+  const { twin } = useRuntimes();
+  const camera = useMemo(() => {
+    const c = new PerspectiveCamera(
+      MIRROR_VFOV,
+      MIRROR_LAYOUT.width / MIRROR_LAYOUT.height,
+      0.3,
+      300,
+    );
+    c.layers.enable(MAP_LAYER); // a mirror shows the road behind
+    return c;
+  }, []);
+  const view = useMemo(() => mirrorView(kind), [kind]);
+  const s = useMemo(
+    () => ({
+      pose: { x: 0, z: 0, heading: 0 },
+      vehicle: new Matrix4(),
+      q: new Quaternion(),
+      up: new Vector3(0, 1, 0),
+      p: new Vector3(),
+      one: new Vector3(1, 1, 1),
+      look: new Vector3(),
+    }),
+    [],
+  );
+  useFrame(() => {
+    if (!frontSeat || !twin.fleet.vehicles[index]) return;
+    fleetPose(twin.fleet, index, s.pose);
+    s.vehicle.compose(
+      s.p.set(s.pose.x, 0, s.pose.z),
+      s.q.setFromAxisAngle(s.up, s.pose.heading),
+      s.one,
+    );
+    camera.position.copy(view.eye).applyMatrix4(s.vehicle);
+    camera.lookAt(s.look.copy(view.look).applyMatrix4(s.vehicle));
+    camera.updateMatrixWorld();
+  });
+  return camera;
+}
 
 export function CabinCameraFeed({ index }: { index: number }) {
   const { twin } = useRuntimes();
@@ -50,14 +108,20 @@ export function CabinCameraFeed({ index }: { index: number }) {
 }
 
 /**
- * A modern jeepney's, UV Express's or bus's door camera (vehicles/doorCamera)
- * as the picture-in-picture while riding along: the first door's, riding on
- * the moving vehicle. Its counting is not wired up yet, so no overlay.
+ * A modern jeepney's, UV Express's or bus's door cameras (vehicles/doorCamera)
+ * while riding along, counting everyone through every door (DoorCounting, on
+ * the twin's own ticks). The picture-in-picture shows whichever door is in
+ * use, riding on the moving vehicle.
  */
 function DoorCameraFeed({ index, kind }: { index: number; kind: VehicleKind }) {
   const { twin } = useRuntimes();
+  const frontSeat = useApp((s) => s.follow?.view === 'pov');
+  const mirror = useMirror(index, kind, frontSeat);
+  const mounts = useMemo(
+    () => doorCameras(kind).map((cam) => createDoorCamera(cam).matrix.clone()),
+    [kind],
+  );
   const camera = useMemo(() => createDoorCamera(doorCameras(kind)[0]!), [kind]);
-  const mount = useMemo(() => camera.matrix.clone(), [camera]);
   const s = useMemo(
     () => ({
       pose: { x: 0, z: 0, heading: 0 },
@@ -71,22 +135,41 @@ function DoorCameraFeed({ index, kind }: { index: number; kind: VehicleKind }) {
     [],
   );
   useEffect(() => {
-    twin.cabinFeed.pipeline = null;
-  }, [twin, index]);
+    const counting = new DoorCounting(
+      kind,
+      1000 + index,
+      twin.fleet.vehicles[index]?.occupancy ?? 0,
+      (see) =>
+        twin.crew.forEachRider(index, (riderId, pose) =>
+          see(riderId, pose, appearance(riderSeed(riderId)).size),
+        ),
+    );
+    twin.doorCounting = counting;
+    twin.cabinFeed.pipeline = counting.pipelines[0]!;
+    twin.cabinFeed.clockMs = 0;
+    return () => {
+      twin.doorCounting = null;
+      twin.cabinFeed.pipeline = null;
+    };
+  }, [twin, index, kind]);
   useFrame(() => {
-    if (!twin.fleet.vehicles[index]) return;
+    const counting = twin.doorCounting;
+    if (!twin.fleet.vehicles[index] || !counting) return;
+    const door = counting.shownDoor;
+    twin.cabinFeed.pipeline = counting.pipelines[door]!;
+    twin.cabinFeed.clockMs = counting.clockMs;
     fleetPose(twin.fleet, index, s.pose);
     s.vehicle.compose(
       s.p.set(s.pose.x, 0, s.pose.z),
       s.q.setFromAxisAngle(s.up, s.pose.heading),
       s.k,
     );
-    s.placed.multiplyMatrices(s.vehicle, mount);
+    s.placed.multiplyMatrices(s.vehicle, mounts[door]!);
     s.placed.decompose(camera.position, camera.quaternion, camera.scale);
     camera.scale.set(1, 1, 1);
     camera.updateMatrixWorld();
   });
-  return <PipRenderer espCamera={camera} />;
+  return <PipRenderer espCamera={camera} mirrorCamera={frontSeat ? mirror : null} />;
 }
 
 /** The jeepney's cabin camera, with its counting pipeline. */
@@ -95,10 +178,7 @@ function JeepneyCabinFeed({ index }: { index: number }) {
   const hideFrustum = useApp((s) => s.follow?.view === 'inside' || s.follow?.view === 'pov');
   const frontSeat = useApp((s) => s.follow?.view === 'pov');
   const camera = useMemo(createCabinCamera, []);
-  const mirror = useMemo(
-    () => new PerspectiveCamera(MIRROR_VFOV, MIRROR_LAYOUT.width / MIRROR_LAYOUT.height, 0.3, 800),
-    [],
-  );
+  const mirror = useMirror(index, 'jeepney', frontSeat);
   const mountRef = useRef<Group>(null);
   const s = useMemo(
     () => ({
@@ -139,11 +219,6 @@ function JeepneyCabinFeed({ index }: { index: number }) {
       s.k.setScalar(1),
     );
     placeOnVehicle(camera, s.vehicle);
-    if (frontSeat) {
-      mirror.position.copy(MIRROR_EYE).applyMatrix4(s.vehicle);
-      mirror.lookAt(s.head.copy(MIRROR_LOOK).applyMatrix4(s.vehicle));
-      mirror.updateMatrixWorld();
-    }
 
     feed.clockMs += Math.min(dt, 0.1) * 1000;
     feed.pipeline.tick(feed.clockMs, () => {

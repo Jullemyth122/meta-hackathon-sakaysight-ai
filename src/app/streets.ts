@@ -20,6 +20,11 @@ import type { TwinRuntime } from './twinRuntime';
 
 const loaded = new Map<string, Catchments>();
 
+/** The side streets of `route`, if loaded already (loadStreets keeps them). */
+export function knownStreets(routeId: string): Catchments | null {
+  return loaded.get(routeId) ?? null;
+}
+
 /** Load the streets around `twin`'s stops and give them to its riders. Returns a cancel. */
 export function loadStreets(twin: TwinRuntime): () => void {
   const { route } = twin;

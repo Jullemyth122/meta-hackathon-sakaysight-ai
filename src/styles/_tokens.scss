@@ -2,46 +2,53 @@
 // SCSS variables only for things that never change (breakpoints, fonts).
 
 $bp-narrow: 820px;
-$font-display: 'Archivo', 'Arial Narrow', system-ui, sans-serif;
-$font-body:
-  'Atkinson Hyperlegible',
+// Inter for everything; numbers line up with tabular figures (.mono), and
+// italic marks what is secondary (notes, hints).
+$font-display:
+  'Inter',
   system-ui,
   -apple-system,
   'Segoe UI',
   sans-serif;
-$font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+$font-body: $font-display;
+$font-mono: $font-display;
 
+// One accent, from the street: the yellow of a public-utility plate, black on
+// yellow. --accent fills (buttons, chips); --accent-ink is the same colour as
+// text and outlines, dark enough to read on paper.
 @mixin light {
-  --bg: #eeeeec;
-  --surface: #ffffff;
-  --surface-2: #f4f4f2;
-  --line: #dcdcd9;
-  --fg: #1a1e26;
-  --muted: #5c6472;
-  --accent: #2a4bd7;
-  --accent-fg: #ffffff;
-  --good: #2f9e5b;
-  --warn: #c98a12;
-  --bad: #d6453d;
-  --flash: rgb(42 75 215 / 0.35);
-  --shadow: 0 1px 2px rgb(20 30 50 / 0.06), 0 6px 24px rgb(20 30 50 / 0.06);
+  --bg: #f5f3ee;
+  --surface: #fffdf8;
+  --surface-2: #f1eee7;
+  --line: #e4dfd4;
+  --fg: #1c1b18;
+  --muted: #6d685e;
+  --accent: #f2c12e;
+  --accent-fg: #1c1b18;
+  --accent-ink: #8a5a00;
+  --good: #1e8e50;
+  --warn: #c2410c;
+  --bad: #c8322b;
+  --flash: rgb(242 193 46 / 0.4);
+  --shadow: 0 1px 2px rgb(28 27 24 / 0.08), 0 6px 18px rgb(28 27 24 / 0.08);
   color-scheme: light;
 }
 
 @mixin dark {
-  --bg: #0c1016;
-  --surface: #141a23;
-  --surface-2: #1a212c;
-  --line: #283140;
-  --fg: #e8ecf3;
-  --muted: #9aa4b6;
-  --accent: #8099ff;
-  --accent-fg: #0c1016;
+  --bg: #0e0e0c;
+  --surface: #161613;
+  --surface-2: #1f1e1a;
+  --line: #2d2b26;
+  --fg: #eeebe4;
+  --muted: #a29d92;
+  --accent: #f5c84a;
+  --accent-fg: #17150f;
+  --accent-ink: #f5c84a;
   --good: #4cc27c;
-  --warn: #e6a547;
+  --warn: #fb8c4a;
   --bad: #f06a62;
-  --flash: rgb(128 153 255 / 0.35);
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 28px rgb(0 0 0 / 0.35);
+  --flash: rgb(245 200 74 / 0.3);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 20px rgb(0 0 0 / 0.35);
   color-scheme: dark;
 }
 

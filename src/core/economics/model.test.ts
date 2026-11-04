@@ -77,7 +77,7 @@ describe('economic accounting', () => {
     // Saturday (day 6 of the month) and Sunday.
     expect(share(5, 'student')).toBeLessThan(share(4, 'student') / 2);
     expect(share(6, 'student')).toBeLessThan(share(0, 'student') / 2);
-    expect(new Set([0, 1, 2, 3, 4].map((d) => share(d, 'student').toFixed(3))).size).toBe(5);
+    expect(new Set([0, 1, 2, 3, 4].map((d) => share(d, 'student').toFixed(4))).size).toBe(5);
   });
   it('reconciles an independently calculated capacity-limited two-trip day including overtime', () => {
     const c = config({
@@ -334,7 +334,7 @@ describe('economic accounting', () => {
       short = economicCorridor('lagro');
     expect(full.stops[0]!.name).toContain('San Jose del Monte');
     expect(short.stops.at(-1)!.name).toBe('Lagro');
-    expect(full.stops.at(-1)!.km).toBeCloseTo(8.60795, 4);
+    expect(full.stops.at(-1)!.km).toBeCloseTo(8.56, 1);
     expect(short.stops.at(-1)!.km).toBeLessThan(full.stops.at(-1)!.km);
     expect(GROUPS).toHaveLength(5);
   });

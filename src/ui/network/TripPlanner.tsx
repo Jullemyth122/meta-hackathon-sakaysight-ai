@@ -11,41 +11,81 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { arrivalsAt, focusRoute, getNetwork, loadPlaces, routeIndex } from '@/app/network';
+import { arrivalsAt, getNetwork, loadPlaces } from '@/app/network';
 import { useRuntimes } from '@/app/runtimeContext';
-import { useApp, type TripEnd, type TripLeg, type TripPoint } from '@/app/store';
+import { useApp, type TripEnd, type TripPoint } from '@/app/store';
+import { askRisk, chainMetres, knownRisk, useStreetWaysVersion } from '@/app/streetWays';
+import { legsOf, takeTrip, tripPoints } from '@/app/trips';
 import type { LocalPoint } from '@/core/geo/projection';
+import type { RoadRisk } from '@/core/map/streets';
 import type { Network } from '@/core/network/network';
 import { planTrips, WAITING_AREA_M, type TripOption } from '@/core/network/plan';
 import { searchPlaces, type Place } from '@/core/network/search';
+import { recommend } from '@/net/agent';
 import { RIDER_KIND_LABEL, RIDER_KINDS, type RiderKind } from '@/core/fare';
 import { metres, minutes, peso } from '../phone/format';
 
 /** Places this close to the route on the map come first in the search (metres). */
 const NEAR_ROUTE_M = 3000;
 
-/** A trip option as the legs the app keeps (store.TripLeg), starting from `from`. */
-function legsOf(o: TripOption, from: LocalPoint | undefined): TripLeg[] {
-  return o.legs.map((l, k) => ({
-    route: l.route,
-    board: l.board,
-    alight: l.alight,
-    walkM: k === 0 ? o.walkToM : o.transferWalkM,
-    approachMode: k === 0 ? o.toBy : 'walk',
-    ...(k === 0 && from && { from }),
-  }));
+const RISK_WORDS: Record<RoadRisk, string> = {
+  expressway: 'an expressway',
+  ramp: 'an expressway ramp',
+  flyover: 'a flyover or a bridge',
+  tunnel: 'a tunnel or underpass',
+};
+
+/** Trips Muse is told about, of those found. */
+const TRIPS_FOR_MUSE = 3;
+/** The trips must stay the same this long before Muse is asked: it costs credit (ms). */
+const ASK_MUSE_AFTER_MS = 900;
+/** What Muse said about these trips: they are asked about once. */
+const museTakes = new Map<string, string | null>();
+
+const tripFacts = (options: readonly TripOption[]) =>
+  options
+    .slice(0, TRIPS_FOR_MUSE)
+    .map((o, i) => {
+      const legs = o.legs.map((l) => `${l.routeName}, ${l.boardName} to ${l.alightName}`);
+      return `${i + 1}. ${legs.join(', then ')}: about ${Math.round(o.totalS / 60)} minutes, ${o.fare} pesos.`;
+    })
+    .join('\n');
+
+/** Which of the trips found Muse would take, when there is a choice to make. */
+function MuseTake({ options }: { options: readonly TripOption[] }) {
+  const facts = tripFacts(options);
+  const [take, setTake] = useState<{ facts: string; text: string | null } | null>(null);
+  useEffect(() => {
+    if (options.length < 2) return;
+    let live = true;
+    const id = window.setTimeout(() => {
+      const known = museTakes.get(facts);
+      void (known === undefined ? recommend(facts).catch(() => null) : Promise.resolve(known)).then(
+        (text) => {
+          museTakes.set(facts, text);
+          if (live) setTake({ facts, text });
+        },
+      );
+    }, ASK_MUSE_AFTER_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(id);
+    };
+  }, [facts]);
+  if (options.length < 2) return null;
+  if (take?.facts !== facts) return <p className="fine">Muse AI is comparing these trips…</p>;
+  return take.text && <p className="assist__answer">{take.text}</p>;
 }
 
-/** Every point of a trip worth framing: its ends, and where each jeepney is boarded and left. */
-function tripPoints(network: Network, legs: readonly TripLeg[], ends: TripEnd[]): LocalPoint[] {
-  return [
-    ...ends.map((e) => e.at),
-    ...legs.flatMap((l) => {
-      const r = network.routes[l.route]!.route;
-      return [r.polyline.pointAt(r.stops[l.board]!.s), r.polyline.pointAt(r.stops[l.alight]!.s)];
-    }),
-  ];
+/** Where stop `i` of route `r` is on the map. */
+function stopPoint(network: Network, r: number, i: number): LocalPoint {
+  const route = network.routes[r]!.route;
+  return route.polyline.pointAt(route.stops[i]!.s);
 }
+
+/** By road when that is known; else the planner's straight line, said as such. */
+const distance = (road: number | undefined, straight: number) =>
+  road === undefined ? `~${metres(straight)}` : metres(road);
 
 function PlaceInput({
   label,
@@ -120,11 +160,19 @@ function PlaceInput({
 
 function OptionCard({
   option,
+  badges,
+  roadTo,
+  roadFrom,
   shown,
   onShow,
   onChoose,
 }: {
   option: TripOption;
+  /** What sets it apart from the others: "Fastest", "Cheapest". */
+  badges: string[];
+  /** Metres by road to the waiting area, and from the last stop, once the map has them. */
+  roadTo?: number;
+  roadFrom?: number;
   /** This is the trip drawn on the map. */
   shown: boolean;
   onShow: () => void;
@@ -133,7 +181,14 @@ function OptionCard({
   return (
     <li className={`ahead ${shown ? 'ahead--stop' : ''}`}>
       <div className="ahead__head">
-        <strong>{minutes(option.totalS)} door to door</strong>
+        <strong>
+          {minutes(option.totalS)} door to door
+          {badges.map((b) => (
+            <span key={b} className="chip chip--good">
+              {b}
+            </span>
+          ))}
+        </strong>
         <span className="mono">
           {peso(option.fare)} · {peso(option.fareDiscounted)} discounted
           {option.toBy === 'tricycle' || option.fromBy === 'tricycle' ? ' + tricycle' : ''}
@@ -142,8 +197,15 @@ function OptionCard({
       <ol className="trip-legs">
         <li className="muted">
           {option.toBy === 'walk'
-            ? `Walk ${metres(option.walkToM)} to the waiting area: ${option.legs[0]!.boardName}`
-            : `Tricycle ${metres(option.walkToM)} to the waiting area: ${option.legs[0]!.boardName} (fare set by your city or town)`}
+            ? `Walk ${distance(roadTo, option.walkToM)} to the waiting area: ${option.legs[0]!.boardName}`
+            : `Tricycle ${distance(roadTo, option.walkToM)} to the waiting area: ${option.legs[0]!.boardName} (fare set by your city or town)`}
+          {option.legs[0]!.flag && (
+            <>
+              . Whatever comes going your way with a seat stops for you there.
+              {option.legs[0]!.flag.across &&
+                ' This trip goes from the far side of the road: cross first, somewhere safe.'}
+            </>
+          )}
         </li>
         {option.legs.map((leg, k) => (
           <li key={k}>
@@ -175,8 +237,8 @@ function OptionCard({
         ))}
         <li className="muted">
           {option.fromBy === 'walk'
-            ? `Walk ${metres(option.walkFromM)} to where you are going`
-            : `Tricycle ${metres(option.walkFromM)} to where you are going (fare set by your city or town)`}
+            ? `Walk ${distance(roadFrom, option.walkFromM)} to where you are going`
+            : `Tricycle ${distance(roadFrom, option.walkFromM)} to where you are going (fare set by your city or town)`}
         </li>
       </ol>
       <div className="trip-actions">
@@ -194,10 +256,6 @@ function OptionCard({
 export function TripPlanner() {
   const { twin } = useRuntimes();
   const ready = useApp((s) => s.network.state === 'ready');
-  const setFocus = useApp((s) => s.setFocus);
-  const setCommuter = useApp((s) => s.setCommuter);
-  const setTripLegs = useApp((s) => s.setTripLegs);
-  const startLeg = useApp((s) => s.startLeg);
   const setMe = useApp((s) => s.setMe);
   const me = useApp((s) => s.me);
   const { home, from, to } = useApp((s) => s.tripEnds);
@@ -220,6 +278,14 @@ export function TripPlanner() {
   }, [network]);
   const [options, setOptions] = useState<TripOption[] | null>(null);
   const [shownAt, setShownAt] = useState(0);
+  // The map's ways by road have come in: the trip on it can say its real metres.
+  useStreetWaysVersion();
+  // A spot nobody can wait at (undefined until the map's roads have said).
+  const risk = from ? knownRisk(from.at) : null;
+  const origin = twin.route.projection?.origin;
+  useEffect(() => {
+    if (from && origin) askRisk(from.at, origin);
+  }, [from, origin]);
 
   /** Draw option `i` of `list` on the map, and frame it end to end. */
   const show = useCallback(
@@ -227,12 +293,12 @@ export function TripPlanner() {
       const o = list[i];
       const n = getNetwork();
       if (!o || !n || !home || !to) return;
-      const legs = legsOf(o, home.at);
+      const legs = legsOf(o, home.at, from?.at);
       setShownAt(i);
       setPreview(legs);
-      requestShot('area', tripPoints(n, legs, [home, to]));
+      requestShot('area', tripPoints(n, legs, from ? [home, from, to] : [home, to]));
     },
-    [home, to, setPreview, requestShot],
+    [home, from, to, setPreview, requestShot],
   );
 
   // The trips, as soon as home and destination are chosen (by name or on the
@@ -245,34 +311,58 @@ export function TripPlanner() {
       setPreview(null);
       return;
     }
+    if (risk) {
+      setOptions([]);
+      setPreview(null);
+      return;
+    }
     const toBy = me.mode === 'auto' ? undefined : me.mode;
     const found = planTrips(n, home.at, to.at, twin.clockS, arrivalsAt(twin), toBy, from?.at);
     setOptions(found);
     if (found.length > 0) show(found, 0);
     else setPreview(null);
-  }, [home, from, to, twin, show, setPreview, me.mode]);
+  }, [home, from, to, twin, show, setPreview, me.mode, risk]);
   // Only when an end (or the network) changes: not when the twin moves on
   // to another route, as taking a trip does (the rider is followed then).
   const latest = useRef(plan);
   latest.current = plan;
   useEffect(() => {
     if (network) latest.current();
-  }, [network, home, from, to, me.mode]);
+  }, [network, home, from, to, me.mode, risk]);
 
   if (!network) return null;
   // The waiting area of the trip on the map, when it was chosen for you.
   const shownBoard = !from && options?.[shownAt] ? options[shownAt]!.legs[0]!.boardName : null;
+  /** "Fastest" and "Cheapest", when there is a choice to make. */
+  const badgesOf = (o: TripOption) => {
+    if (!options || options.length < 2) return [];
+    const fares = options.map((x) => x.fare);
+    const cheapest = Math.min(...fares);
+    const fastest = Math.min(...options.map((x) => x.totalS));
+    return [
+      ...(o.totalS === fastest ? ['Fastest'] : []),
+      ...(o.fare === cheapest && Math.max(...fares) > cheapest ? ['Cheapest'] : []),
+    ];
+  };
+  /** The trip on the map's metres by road: none for an option not on it. */
+  const roads = (o: TripOption, i: number) => {
+    if (preview === null || shownAt !== i || !home || !to) return {};
+    const first = o.legs[0]!;
+    const last = o.legs.at(-1)!;
+    const board = stopPoint(network, first.route, first.board);
+    const chain = first.flag
+      ? [home.at, first.flag.at]
+      : from
+        ? [home.at, from.at, board]
+        : [home.at, board];
+    return {
+      roadTo: chainMetres(chain, o.toBy),
+      roadFrom: chainMetres([stopPoint(network, last.route, last.alight), to.at]),
+    };
+  };
 
   const choose = (o: TripOption) => {
-    const first = o.legs[0]!;
-    // Already the focused route: keep its live jeepneys (the one just offered).
-    if (routeIndex(twin.route.id) !== first.route) setFocus(focusRoute(first.route, twin), true);
-    setCommuter({ stop: first.board, destination: first.alight });
-    setTripLegs(legsOf(o, home?.at));
-    // From this trip's own start, not a spot picked on the map before.
-    setMe({ place: null });
-    // "You" set out in the twin from where the trip starts; the app follows you.
-    startLeg(0, getNetwork()!.routes[first.route]!.route.id);
+    takeTrip(o, twin);
     setOptions(null);
   };
 
@@ -295,8 +385,8 @@ export function TripPlanner() {
         onChange={(p) => setTripEnd('from', p)}
         placeholder={
           shownBoard
-            ? `Chosen for you: ${shownBoard} (or pick one)`
-            : 'Chosen for you, or pick a stop'
+            ? `Chosen for you: ${shownBoard} (or pick a spot by the road)`
+            : 'Chosen for you, or pick a spot by the road'
         }
       />
       <PlaceInput
@@ -338,19 +428,28 @@ export function TripPlanner() {
       <button type="button" className="btn btn--primary" disabled={!home || !to} onClick={plan}>
         {options ? 'Find again (now)' : 'Find jeepneys'}
       </button>
-      {options && options.length === 0 && (
+      {risk && (
+        <p className="error">
+          You cannot wait for a ride here: this is {RISK_WORDS[risk]}. Pick a spot at the side of an
+          ordinary road.
+        </p>
+      )}
+      {options && options.length === 0 && !risk && (
         <p className="muted">
           {from
-            ? `No jeepney stop within ${WAITING_AREA_M} m of the waiting area you chose that goes there. Pick a spot by a jeepney road, or clear it to have one chosen for you.`
+            ? `No jeepney passes there going your way, and no stop within ${WAITING_AREA_M} m does. Pick a spot beside a jeepney road, or clear it to have one chosen for you.`
             : 'No jeepney trip with at most one change found. It may be close enough to walk, or need a bus, train or tricycle.'}
         </p>
       )}
+      {options && <MuseTake options={options} />}
       {options && options.length > 0 && (
         <ul className="ahead-list">
           {options.map((o, i) => (
             <OptionCard
               key={i}
               option={o}
+              badges={badgesOf(o)}
+              {...roads(o, i)}
               shown={preview !== null && shownAt === i}
               onShow={() => show(options, i)}
               onChoose={() => choose(o)}

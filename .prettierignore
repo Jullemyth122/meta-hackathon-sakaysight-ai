@@ -2,3 +2,6 @@ dist
 node_modules
 public/data
 Notes.md
+# The loading screen's generated scene: scripts/splash/build.py
+index.html
+scripts/splash

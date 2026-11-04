@@ -15,10 +15,10 @@ import type { Polyline } from '@/core/geo/polyline';
 import { ROUTE_ROAD_WIDTH_M } from '@/core/map/style';
 import { flat, FLAT_ORDER } from '../map/flatLayers';
 
-const ROUTE_COLOR = '#2a4bd7';
-/** True-scale widths, metres. */
-const CASING_WIDTH_M = 7;
-const BAND_WIDTH_M = 4.2;
+const ROUTE_COLOR = '#24407a';
+/** True-scale widths, metres: a guide along the kerb lane, not a lane of its own. */
+const CASING_WIDTH_M = 1.5;
+const BAND_WIDTH_M = 0.9;
 
 /**
  * Centre-line strip with an `offset` attribute: the unit vector from the

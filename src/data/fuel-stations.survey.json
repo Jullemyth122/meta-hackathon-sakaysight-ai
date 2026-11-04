@@ -1,6 +1,6 @@
 {
   "about": "Gas stations the team has checked on the ground that OpenStreetMap does not have yet. scripts/fetch-fuel.mjs merges these into fuel-stations.json (a station already in OpenStreetMap within 40 m, same brand, is kept once). Better still: add the station to OpenStreetMap with the Every Door or StreetComplete phone app, so every map gets it, then re-run the script and delete it here.",
-  "rules": "Only positions you measured yourself: stand at the station's entrance and read your phone's GPS (Every Door, the CommuteAI tracker, or any GPS app). Never copy a position or details from Google Maps or another map: their terms forbid it, and it would make this data unusable.",
+  "rules": "Only positions you measured yourself: stand at the station's entrance and read your phone's GPS (Every Door, the SakaySightAI tracker, or any GPS app). Never copy a position or details from Google Maps or another map: their terms forbid it, and it would make this data unusable.",
   "format": {
     "name": "Uno Fuel - Bankers",
     "brand": "Uno Fuel",

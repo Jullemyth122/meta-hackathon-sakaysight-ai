@@ -1,5 +1,5 @@
 /**
- * Deterministic CommuteAI Intelligence Engine (Server-side /api).
+ * Deterministic SakaySightAI Intelligence Engine (Server-side /api).
  *
  * Computes exact mathematical answers for the two core personas BEFORE (or
  * without) calling the Meta LLM:
@@ -10,7 +10,8 @@
  *      passengers dropping off and boarding at stops in between)?
  *    - If the nearest jeepney will be full, when does the next jeepney with
  *      open seats arrive?
- *    - What is the exact LTFRB fare (Regular vs. 20% Student/Senior/PWD)?
+ *    - What is the exact LTFRB fare for that vehicle (Regular vs. 20%
+ *      Student/Senior/PWD)?
  *
  * 2. DRIVER & FLEET DISPATCH INTELLIGENCE (FCFS Conflict Resolution + Fuel):
  *    - Where are waiting passengers located (stop & km mark)?
@@ -32,7 +33,9 @@ import {
   type TripRoute,
   type TripBudget,
   type TripBudgetInputs,
-} from '../../src/core/advisory/tripBudget';
+} from '../../src/core/advisory/tripBudget.js';
+import { FARE_BY_VEHICLE, fareFor } from '../../src/core/fare.js';
+import { KIND_WORD, type FleetKind } from '../../src/core/vehicles/specs.js';
 
 export interface RawSnapshot {
   tripRoute?: TripRoute;
@@ -40,11 +43,19 @@ export interface RawSnapshot {
     name?: string;
     source?: string;
     lengthKm?: number;
-    stops?: Array<{ name: string; sKm?: number; s?: number; waiting?: number }>;
+    stops?: Array<{
+      name: string;
+      sKm?: number;
+      s?: number;
+      waiting?: number;
+      terminal?: boolean;
+    }>;
   };
   simulatedFleet?: Array<{
     id?: string;
     plate: string;
+    /** What it is (a traditional jeepney when not said): its fare and where it loads. */
+    kind?: FleetKind;
     occupancy: number;
     capacity: number;
     kmh: number;
@@ -52,6 +63,8 @@ export interface RawSnapshot {
     sKm?: number;
     /** Optional explicit drop-off counts keyed by stop name. */
     dropOffs?: Record<string, number>;
+    /** Seconds to each stop by name, as the app's screens work them out. */
+    etaS?: Record<string, number>;
   }>;
   waitingAtStops?: Record<string, number>;
   liveSessions?: Array<{
@@ -89,6 +102,8 @@ export interface StopNode {
   index: number;
   name: string;
   sKm: number;
+  /** Everyone gets off here. */
+  terminal: boolean;
   initialWaiting: number;
   unclaimedWaiting: number;
   claimedBy: Array<{ plate: string; etaSeconds: number; boarded: number }>;
@@ -124,6 +139,7 @@ export interface DriverStopDecision {
 
 export interface DriverDispatchPlan {
   plate: string;
+  kind: FleetKind;
   currentKm: number;
   speedKmh: number;
   currentOccupancy: number;
@@ -140,8 +156,8 @@ export interface DriverDispatchPlan {
   stopGoFuelLiters: number;
   totalFuelLiters: number;
   totalFuelCostPhp: number;
-  fuelSavedByAiLiters: number;
-  fuelSavedByAiPhp: number;
+  fuelSavedBySkippingLiters: number;
+  fuelSavedBySkippingPhp: number;
   equivalentKmSaved: number;
   netDriverTakeHomePhp: number;
   stopDecisions: DriverStopDecision[];
@@ -150,6 +166,7 @@ export interface DriverDispatchPlan {
 
 export interface CommuterJeepneyArrival {
   plate: string;
+  kind: FleetKind;
   distanceAwayKm: number;
   etaSeconds: number;
   etaMinutes: number;
@@ -216,28 +233,21 @@ export interface CommutePlanResult {
   directAnswer: string;
 }
 
-/** Known kilometer markers for the default Malaria – SM City Fairview OSM stops. */
-const KNOWN_MALARIA_STOP_KM: Record<string, number> = {
-  Malaria: 0.0,
-  'Mountain View': 1.5,
-  Amparo: 2.7,
-  'Dela Costa Subdivision': 3.4,
-  'Mater Carmeli School': 4.3,
-  'La Mesa Dam': 4.7,
-  Lagro: 5.0,
-  'SM City Fairview': 6.33,
-};
-
 /**
  * Traditional Philippine diesel jeepney (Isuzu 4JB1 / 4BC2 2.8L-3.3L) fuel constants:
  * - Base cruise burn: 0.14 L/km empty + 0.0025 L/km per onboard passenger
- * - Stop-and-go cycle (deceleration + 22s boarding dwell idle + 1st/2nd gear launch): 0.028 L
+ * - Stop-and-go cycle (deceleration + boarding dwell idle + 1st/2nd gear launch): 0.028 L
  *   (0.028 L / 0.14 L/km = 0.20 km of equivalent cruising distance per stop)
+ *
+ * The same numbers as ADVISORY in src/core/advisory/model.ts, so the assistant
+ * and the screens agree (planner.test.ts holds them together); not imported,
+ * because that file brings the bundled price data with it.
  */
-const BASE_L_PER_KM = 0.14;
-const LOAD_L_PER_KM_PER_PAX = 0.0025;
-const STOP_GO_PENALTY_LITERS = 0.028;
-const STOP_DWELL_SECONDS = 22;
+export const COSTS = { baseLPerKm: 0.14, perRiderLPerKm: 0.0025, stopGoL: 0.028 };
+const BASE_L_PER_KM = COSTS.baseLPerKm;
+const LOAD_L_PER_KM_PER_PAX = COSTS.perRiderLPerKm;
+const STOP_GO_PENALTY_LITERS = COSTS.stopGoL;
+export const STOP_DWELL_SECONDS = 30;
 /**
  * Used only when the app does not send this week's price
  * (dieselPricePhpPerLiter). DOE NCR common diesel price, Oct 20–26 2026:
@@ -245,13 +255,8 @@ const STOP_DWELL_SECONDS = 22;
  */
 const DEFAULT_DIESEL_PHP = 94.55;
 const MIN_EFFECTIVE_KMH = 14;
-
-/** LTFRB Traditional Jeepney Fare: ₱14 first 4 km + ₱2 per started km; 20% discount. */
-export function calculateFarePhp(distanceKm: number, discounted = false): number {
-  const extraKm = Math.max(0, Math.ceil(Math.max(0, distanceKm) - 4 - 1e-9));
-  const regular = 14 + extraKm * 2;
-  return discounted ? Math.round(regular * 0.8 * 4) / 4 : regular;
-}
+/** The usual ride, for a rough day's fares (one short trip's first-distance fare). */
+const AVERAGE_RIDE_KM = 3.8;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -271,13 +276,13 @@ function extractStops(snapshot: RawSnapshot, routeLengthKm: number): StopNode[] 
           ? s.sKm
           : typeof s.s === 'number'
             ? s.s / 1000
-            : (KNOWN_MALARIA_STOP_KM[s.name] ??
-              (idx / Math.max(1, explicit.length - 1)) * routeLengthKm);
+            : (idx / Math.max(1, explicit.length - 1)) * routeLengthKm;
       const w = s.waiting ?? snapshot.waitingAtStops?.[s.name] ?? 0;
       return {
         index: idx,
         name: s.name,
         sKm: round2(sKm),
+        terminal: s.terminal === true,
         initialWaiting: w,
         unclaimedWaiting: w,
         claimedBy: [],
@@ -292,6 +297,7 @@ function extractStops(snapshot: RawSnapshot, routeLengthKm: number): StopNode[] 
         index: 0,
         name: 'Origin Terminal',
         sKm: 0,
+        terminal: true,
         initialWaiting: 0,
         unclaimedWaiting: 0,
         claimedBy: [],
@@ -300,6 +306,7 @@ function extractStops(snapshot: RawSnapshot, routeLengthKm: number): StopNode[] 
         index: 1,
         name: 'Destination Terminal',
         sKm: routeLengthKm,
+        terminal: true,
         initialWaiting: 0,
         unclaimedWaiting: 0,
         claimedBy: [],
@@ -308,16 +315,13 @@ function extractStops(snapshot: RawSnapshot, routeLengthKm: number): StopNode[] 
   }
 
   return entries.map(([name, waiting], idx) => {
-    const known = KNOWN_MALARIA_STOP_KM[name];
-    const sKm =
-      known !== undefined
-        ? Math.min(routeLengthKm, known)
-        : (idx / Math.max(1, entries.length - 1)) * routeLengthKm;
+    const sKm = (idx / Math.max(1, entries.length - 1)) * routeLengthKm;
     const w = typeof waiting === 'number' && Number.isFinite(waiting) ? Math.max(0, waiting) : 0;
     return {
       index: idx,
       name,
       sKm: round2(sKm),
+      terminal: false,
       initialWaiting: w,
       unclaimedWaiting: w,
       claimedBy: [],
@@ -329,6 +333,8 @@ function extractStops(snapshot: RawSnapshot, routeLengthKm: number): StopNode[] 
  * Estimate where onboard passengers (`occupancy`) will drop off across upcoming
  * stops when explicit per-passenger drop-off destinations are not provided.
  * Commercial/transfer stops and the final terminal receive higher alighting weights.
+ * With explicit ones, a rider bound beyond the stops listed stays on past them;
+ * only a terminal empties the vehicle.
  */
 function estimateDropOffsByStop(
   occupancy: number,
@@ -339,9 +345,9 @@ function estimateDropOffsByStop(
 
   if (explicitDropOffs) {
     let remaining = occupancy;
-    return upcomingStops.map((st, idx) => {
-      if (idx === upcomingStops.length - 1) return remaining;
-      const count = Math.min(remaining, Math.max(0, Math.round(explicitDropOffs[st.name] ?? 0)));
+    return upcomingStops.map((st) => {
+      const wanted = st.terminal ? remaining : Math.round(explicitDropOffs[st.name] ?? 0);
+      const count = Math.min(remaining, Math.max(0, wanted));
       remaining -= count;
       return count;
     });
@@ -350,7 +356,7 @@ function estimateDropOffsByStop(
   // Deterministic demand-weighted alighting profile:
   // Mid-route commercial stops get moderate drop-offs; the terminal gets all remaining riders.
   const weights = upcomingStops.map((st, idx) => {
-    if (idx === upcomingStops.length - 1) return 3.2; // Terminal hub (e.g. SM City Fairview)
+    if (idx === upcomingStops.length - 1) return 3.2; // The terminal hub.
     if (idx === 0) return 0.6;
     return 1.0 + (st.initialWaiting > 4 ? 0.5 : 0);
   });
@@ -426,11 +432,15 @@ export function buildCommutePlan(
       },
       directAnswer: budget.answer,
     };
-  const routeName = snapshot.route?.name ?? 'Malaria – SM City Fairview';
+  const routeName = snapshot.route?.name ?? 'this route';
+  const furthestStopKm = Math.max(
+    1,
+    ...(snapshot.route?.stops ?? []).map((s) => s.sKm ?? (s.s ?? 0) / 1000),
+  );
   const routeLengthKm =
     typeof snapshot.route?.lengthKm === 'number' && snapshot.route.lengthKm > 0
       ? snapshot.route.lengthKm
-      : 6.33;
+      : furthestStopKm;
   const dieselPhp = options.dieselPricePhpPerLiter ?? DEFAULT_DIESEL_PHP;
 
   const stops = extractStops(snapshot, routeLengthKm);
@@ -438,10 +448,7 @@ export function buildCommutePlan(
 
   // 1. Place each vehicle along the route (sKm) and list its upcoming stops.
   const vehicles = rawVehicles.map((v, idx) => {
-    const nextIdx = Math.max(
-      0,
-      stops.findIndex((s) => s.name === v.nextStop),
-    );
+    const nextIdx = stops.findIndex((s) => s.name === v.nextStop);
     const resolvedNextIdx = nextIdx >= 0 ? nextIdx : Math.min(stops.length - 1, 1);
     const prevKm = resolvedNextIdx > 0 ? (stops[resolvedNextIdx - 1]?.sKm ?? 0) : 0;
     const nextKm = stops[resolvedNextIdx]?.sKm ?? routeLengthKm;
@@ -460,6 +467,8 @@ export function buildCommutePlan(
 
     return {
       plate: v.plate || `JEEP-${idx + 1}`,
+      kind: v.kind ?? ('jeepney' as FleetKind),
+      etaS: v.etaS,
       currentKm,
       speedKmh: Math.max(0, v.kmh),
       effectiveKmh,
@@ -497,7 +506,8 @@ export function buildCommutePlan(
         const sim = simByPlate.get(v.plate)!;
         const distKm = Math.max(0, stop.sKm - v.currentKm);
         const driveSeconds = (distKm / v.effectiveKmh) * 3600;
-        const etaSeconds = Math.round(driveSeconds + sim.cumulativeDwellS);
+        // The screens' own time when sent: they go by how long the road is taking.
+        const etaSeconds = Math.round(v.etaS?.[stop.name] ?? driveSeconds + sim.cumulativeDwellS);
         const dropOffsHere = v.dropOffsPerUpcoming[upIdx] ?? 0;
         return { v, sim, distKm, etaSeconds, dropOffsHere };
       })
@@ -512,7 +522,9 @@ export function buildCommutePlan(
 
       const claimedEarlierByPlates = stop.claimedBy.map((c) => c.plate);
       const unclaimedHere = stop.unclaimedWaiting;
-      const boardedHere = Math.min(unclaimedHere, freeSeatsForBoarding);
+      // A UV Express takes riders on only at its terminals (core/vehicles/stops.ts).
+      const loadsHere = v.kind !== 'uv' || stop.terminal;
+      const boardedHere = loadsHere ? Math.min(unclaimedHere, freeSeatsForBoarding) : 0;
 
       let action: StopActionKind;
       let reason: string;
@@ -526,15 +538,18 @@ export function buildCommutePlan(
           stop.initialWaiting > 0 && unclaimedHere === 0
             ? `Stop briefly at ${stop.name} for ${dropOffsHere} drop-off(s) only (${claimedEarlierByPlates.join(', ')} is closer and claims the ${stop.initialWaiting} waiting rider(s)).`
             : `Stop at ${stop.name} to let ${dropOffsHere} passenger(s) alight.`;
+      } else if (!loadsHere) {
+        action = 'SKIP_EMPTY_STOP';
+        reason = `Pass ${stop.name}: a UV Express takes riders on only at its terminals.`;
       } else if (boardedHere > 0) {
         action = 'STOP_PICKUP_ONLY';
         reason = `Stop at ${stop.name} (${stop.sKm.toFixed(1)} km): you are in FCFS position to pick up ${boardedHere} waiting rider(s).`;
       } else if (stop.initialWaiting > 0 && unclaimedHere === 0) {
         action = 'SKIP_CLAIMED_BY_CLOSER_JEEPNEY';
-        reason = `FCFS conflict avoided at ${stop.name}: closer jeepney ${claimedEarlierByPlates.join(', ')} arrives first and claims all ${stop.initialWaiting} waiting rider(s), and you have 0 drop-offs here. Cruise past to save ${STOP_GO_PENALTY_LITERS * 1000} mL diesel.`;
+        reason = `FCFS conflict avoided at ${stop.name}: closer vehicle ${claimedEarlierByPlates.join(', ')} arrives first and claims all ${stop.initialWaiting} waiting rider(s), and you have 0 drop-offs here. Cruise past to save ${STOP_GO_PENALTY_LITERS * 1000} mL diesel.`;
       } else if (freeSeatsForBoarding === 0 && stop.initialWaiting > 0) {
         action = 'SKIP_FULL_CAPACITY';
-        reason = `Bypass ${stop.name}: cabin is full (${occAfterDrop}/${v.capacity}) with 0 drop-offs here; leave the ${unclaimedHere} waiting rider(s) for the next jeepney behind you.`;
+        reason = `Bypass ${stop.name}: cabin is full (${occAfterDrop}/${v.capacity}) with 0 drop-offs here; leave the ${unclaimedHere} waiting rider(s) for the next vehicle behind you.`;
       } else {
         action = 'SKIP_EMPTY_STOP';
         reason = `Bypass ${stop.name}: 0 waiting riders and 0 drop-offs—maintain cruising speed to save fuel.`;
@@ -597,16 +612,16 @@ export function buildCommutePlan(
     const totalFuelLiters = round3(cruisingFuelLiters + stopGoFuelLiters);
     const totalFuelCostPhp = round2(totalFuelLiters * dieselPhp);
 
-    const fuelSavedByAiLiters = round3(stopsToSkip * STOP_GO_PENALTY_LITERS);
-    const fuelSavedByAiPhp = round2(fuelSavedByAiLiters * dieselPhp);
-    const equivalentKmSaved = round2(fuelSavedByAiLiters / BASE_L_PER_KM);
+    const fuelSavedBySkippingLiters = round3(stopsToSkip * STOP_GO_PENALTY_LITERS);
+    const fuelSavedBySkippingPhp = round2(fuelSavedBySkippingLiters * dieselPhp);
+    const equivalentKmSaved = round2(fuelSavedBySkippingLiters / BASE_L_PER_KM);
 
     const totalExpectedBoardings = stopDecisions.reduce((s, d) => s + d.expectedBoardingsHere, 0);
     const totalExpectedDropOffs = stopDecisions.reduce((s, d) => s + d.dropOffsHere, 0);
 
-    // Average trip distance per boarding rider (~3.8 km along the 6.33 km corridor -> ₱14 base fare).
     const projectedGrossFarePhp = round2(
-      (v.currentOccupancy + totalExpectedBoardings) * calculateFarePhp(3.8, false),
+      (v.currentOccupancy + totalExpectedBoardings) *
+        fareFor(AVERAGE_RIDE_KM, false, FARE_BY_VEHICLE[v.kind]),
     );
     const netDriverTakeHomePhp = round2(projectedGrossFarePhp - totalFuelCostPhp);
 
@@ -625,11 +640,12 @@ export function buildCommutePlan(
     const driverSummary =
       `[${v.plate}] Position ${v.currentKm.toFixed(1)}/${routeLengthKm.toFixed(1)} km (${v.currentOccupancy}/${v.capacity} riders, ${v.speedKmh} km/h). ` +
       `Stop at: ${stopNames.length ? stopNames.join(', ') : 'none'}. ` +
-      `Skip (${stopsToSkip}): ${skipNames.length ? skipNames.join(', ') : 'none'} → saves ${round2(fuelSavedByAiLiters * 1000)} mL diesel (₱${fuelSavedByAiPhp.toFixed(2)}, ~${equivalentKmSaved} km equivalent). ` +
+      `Skip (${stopsToSkip}): ${skipNames.length ? skipNames.join(', ') : 'none'} → saves ${round2(fuelSavedBySkippingLiters * 1000)} mL diesel (₱${fuelSavedBySkippingPhp.toFixed(2)}, ~${equivalentKmSaved} km equivalent). ` +
       `Remaining leg (${remainingRouteKm} km) uses ${totalFuelLiters} L (₱${totalFuelCostPhp.toFixed(2)}); projected gross fare ₱${projectedGrossFarePhp.toFixed(0)} (net ₱${netDriverTakeHomePhp.toFixed(0)}).`;
 
     return {
       plate: v.plate,
+      kind: v.kind,
       currentKm: v.currentKm,
       speedKmh: v.speedKmh,
       currentOccupancy: v.currentOccupancy,
@@ -646,8 +662,8 @@ export function buildCommutePlan(
       stopGoFuelLiters,
       totalFuelLiters,
       totalFuelCostPhp,
-      fuelSavedByAiLiters,
-      fuelSavedByAiPhp,
+      fuelSavedBySkippingLiters,
+      fuelSavedBySkippingPhp,
       equivalentKmSaved,
       netDriverTakeHomePhp,
       stopDecisions,
@@ -668,8 +684,6 @@ export function buildCommutePlan(
   for (const stop of stops) {
     const destStop = requestedDest.sKm > stop.sKm ? requestedDest : finalStop;
     const tripDistanceKm = round2(Math.max(0.5, destStop.sKm - stop.sKm));
-    const regularFarePhp = calculateFarePhp(tripDistanceKm, false);
-    const discountedFarePhp = calculateFarePhp(tripDistanceKm, true);
 
     const arrivals: CommuterJeepneyArrival[] = [];
     for (const plan of driverPlans) {
@@ -680,6 +694,7 @@ export function buildCommutePlan(
       const freeSeatsHere = Math.max(0, plan.capacity - occAfterDropHere);
       arrivals.push({
         plate: plan.plate,
+        kind: plan.kind,
         distanceAwayKm: dec.distanceAheadKm,
         etaSeconds: dec.etaSeconds,
         etaMinutes: dec.etaMinutes,
@@ -705,6 +720,12 @@ export function buildCommutePlan(
     const nearest = arrivals[0] ?? null;
     const firstWithSeat = arrivals.find((a) => a.willHaveSeatForYou) ?? null;
 
+    // The fare of the vehicle that takes them; a jeepney's until one is coming.
+    const rule = FARE_BY_VEHICLE[(firstWithSeat ?? nearest)?.kind ?? 'jeepney'];
+    const regularFarePhp = fareFor(tripDistanceKm, false, rule);
+    const discountedFarePhp = fareFor(tripDistanceKm, true, rule);
+    const word = (a: CommuterJeepneyArrival) => KIND_WORD[a.kind];
+
     let status: CommuterStopAdvice['status'] = 'NO_JEEPNEY_WITH_SEATS';
     if (nearest && nearest.willHaveSeatForYou) {
       status = 'BOARD_NEAREST';
@@ -719,18 +740,18 @@ export function buildCommutePlan(
     const fare = `Fare to ${destStop.name} (${tripDistanceKm.toFixed(1)} km): ₱${regularFarePhp.toFixed(2)} regular / ₱${discountedFarePhp.toFixed(2)} discounted (Student/Senior/PWD).`;
     let commuterSummary: string;
     if (!nearest) {
-      commuterSummary = `At ${stop.name}: no jeepney is on its way to this stop right now.`;
+      commuterSummary = `At ${stop.name}: no vehicle is on its way to this stop right now.`;
     } else if (status === 'BOARD_NEAREST') {
       commuterSummary =
-        `At ${stop.name}: board ${nearest.plate}, arriving in ${nearest.etaMinutes.toFixed(1)} min (${nearest.distanceAwayKm.toFixed(2)} km away) with ${nearest.seatsLeftForYou} seat(s) left for you${queue}. ` +
+        `At ${stop.name}: board ${word(nearest)} ${nearest.plate}, arriving in ${nearest.etaMinutes.toFixed(1)} min (${nearest.distanceAwayKm.toFixed(2)} km away) with ${nearest.seatsLeftForYou} seat(s) left for you${queue}. ` +
         fare;
     } else if (status === 'WAIT_FOR_NEXT_WITH_SEATS' && firstWithSeat) {
       commuterSummary =
-        `At ${stop.name}: the nearest jeepney ${nearest.plate} (${nearest.etaMinutes.toFixed(1)} min) has ${nearest.projectedFreeSeatsAtYourStop} free seat(s), not enough for you${queue}. ` +
-        `Wait for ${firstWithSeat.plate}, arriving in ${firstWithSeat.etaMinutes.toFixed(1)} min (${firstWithSeat.distanceAwayKm.toFixed(2)} km away) with ${firstWithSeat.seatsLeftForYou} seat(s) left for you. ` +
+        `At ${stop.name}: the nearest ${word(nearest)} ${nearest.plate} (${nearest.etaMinutes.toFixed(1)} min) has ${nearest.projectedFreeSeatsAtYourStop} free seat(s), not enough for you${queue}. ` +
+        `Wait for ${word(firstWithSeat)} ${firstWithSeat.plate}, arriving in ${firstWithSeat.etaMinutes.toFixed(1)} min (${firstWithSeat.distanceAwayKm.toFixed(2)} km away) with ${firstWithSeat.seatsLeftForYou} seat(s) left for you. ` +
         fare;
     } else {
-      commuterSummary = `At ${stop.name}: the nearest jeepney is ${nearest.plate} in ${nearest.etaMinutes.toFixed(1)} min, but none of the jeepneys on their way will have a seat left for you${queue}.`;
+      commuterSummary = `At ${stop.name}: the nearest ${word(nearest)} is ${nearest.plate} in ${nearest.etaMinutes.toFixed(1)} min, but none of the vehicles on their way will have a seat left for you${queue}.`;
     }
 
     commuterAdviceByStop[stop.name] = {
@@ -784,18 +805,18 @@ export function buildCommutePlan(
   } else {
     // Operator / combined view:
     const busiest = [...stops].sort((a, b) => b.initialWaiting - a.initialWaiting)[0];
-    const totalSavedL = round3(driverPlans.reduce((s, p) => s + p.fuelSavedByAiLiters, 0));
-    const totalSavedPhp = round2(driverPlans.reduce((s, p) => s + p.fuelSavedByAiPhp, 0));
+    const totalSavedL = round3(driverPlans.reduce((s, p) => s + p.fuelSavedBySkippingLiters, 0));
+    const totalSavedPhp = round2(driverPlans.reduce((s, p) => s + p.fuelSavedBySkippingPhp, 0));
     const busiestClaim =
       busiest && busiest.claimedBy.length > 0
         ? `${busiest.claimedBy.map((c) => `${c.plate} (ETA ${Math.round((c.etaSeconds / 60) * 10) / 10}m, boards ${c.boarded})`).join(', ')}`
-        : 'no approaching jeepney with free seats yet';
+        : 'no approaching vehicle with free seats yet';
     directAnswer =
       `Route ${routeName} (${routeLengthKm} km): ${totalWaiting} waiting riders across ${stops.length} stops. ` +
       (busiest
         ? `Highest demand is at ${busiest.name} (${busiest.sKm} km, ${busiest.initialWaiting} waiting) → assigned First-Come-First-Served to ${busiestClaim}. `
         : '') +
-      `Across all ${driverPlans.length} jeepneys, FCFS conflict resolution & skip-stop pacing avoids unnecessary stops, saving ${round2(totalSavedL * 1000)} mL diesel (₱${totalSavedPhp.toFixed(2)}) on this leg.`;
+      `Across all ${driverPlans.length} vehicles, FCFS conflict resolution & skip-stop pacing avoids unnecessary stops, saving ${round2(totalSavedL * 1000)} mL diesel (₱${totalSavedPhp.toFixed(2)}) on this leg.`;
   }
 
   const stopBadges: SceneStopBadge[] = (focusedDriverPlan?.stopDecisions ?? []).map((d) => {
@@ -806,7 +827,7 @@ export function buildCommutePlan(
       stopKm: d.stopKm,
       kind: isConflictAvoided ? 'conflict-avoided' : isSkip ? 'skip' : 'stop',
       label: isConflictAvoided
-        ? `SKIP (FCFS: ${d.claimedEarlierByPlates[0] ?? 'closer jeep'})`
+        ? `SKIP (FCFS: ${d.claimedEarlierByPlates[0] ?? 'closer vehicle'})`
         : isSkip
           ? `SKIP • Save ${Math.round(d.fuelSavedLitersIfSkipped * 1000)}mL`
           : `STOP • +${d.expectedBoardingsHere} / -${d.dropOffsHere}`,

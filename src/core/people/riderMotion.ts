@@ -45,7 +45,18 @@ export interface Seat {
    * along the wall, sat on from the aisle.
    */
   standX?: number;
+  /**
+   * Not a seat: a place to stand in the aisle, or to hang on at a jeepney's
+   * back step. Taken only once the seats are gone, and left for a seat as
+   * soon as one comes free.
+   */
+  stands?: boolean;
+  /** Standing: what the [right, left] hands hold on to, vehicle frame (null: hanging loose). */
+  holds?: readonly [Hold | null, Hold | null];
 }
+
+/** A point on a rail or pole, vehicle frame. */
+export type Hold = readonly [number, number, number];
 
 /**
  * A door in the vehicle's side, on +z (the kerb: modern jeepney, UV
@@ -100,6 +111,8 @@ export interface RiderPose {
   liftLeg: 0 | 1;
   /** 0..1: hands reaching forward to the grab poles beside the entrance. */
   reach: number;
+  /** 0..1: hands on the rails of the place they stand in (Seat.holds). */
+  hold: number;
 }
 
 type Range = readonly [number, number];
@@ -121,6 +134,7 @@ interface Segment {
   lean?: Range;
   stoop?: Range;
   reach?: Range;
+  hold?: Range;
 }
 
 /** A commuter's walk: brisk, they have somewhere to be. */
@@ -131,6 +145,8 @@ const STEP_S = 0.6;
 const CLIMB_S = 0.62;
 const TURN_S = 0.4;
 const SIT_S = 0.85;
+/** Getting a hand up to a rail, or off it. */
+const HOLD_S = 0.45;
 const STRIDE_PER_M = 5.7;
 const STOOP = 0.88;
 /** Ducking under the door header (2.04 m) on the way in or out. */
@@ -233,11 +249,17 @@ function climbOut(L: CabinLayout): Segment[] {
 
 /** Boarding from `startX` on the road (lateral offset `lane`) to `seat`. */
 function boardingSegments(L: CabinLayout, seat: Seat, startX: number, lane: number): Segment[] {
-  const turnZ = seat.z * TURN_Z_FRACTION;
   const out: Segment[] = [];
   if (startX < L.stepOutsideX - 0.05)
     out.push(walk([startX, 0, lane], [L.stepOutsideX, 0, AISLE_Z], WALK_MPS, false, 0));
-  out.push(...climbIn(L));
+  out.push(...climbIn(L), ...aisleToSeat(L, seat));
+  return out;
+}
+
+/** From just inside the rear entrance: along the aisle, turn, and sit down in `seat`. */
+function aisleToSeat(L: CabinLayout, seat: Seat): Segment[] {
+  const turnZ = seat.z * TURN_Z_FRACTION;
+  const out: Segment[] = [];
   out.push({
     ...walk([L.insideX, L.floorY, AISLE_Z], [seat.x, L.floorY, turnZ], AISLE_MPS, true, 0),
     lean: [CLIMB_LEAN, AISLE_LEAN],
@@ -264,6 +286,66 @@ function boardingSegments(L: CabinLayout, seat: Seat, startX: number, lane: numb
     lean: [0.06, 0],
   });
   return out;
+}
+
+/** Still at `at`, a hand going up to the rail or coming off it. */
+function holding(
+  at: readonly [number, number, number],
+  yaw: number,
+  hold: Range,
+  ranges: { stoop: Range; lean: Range; reach: Range },
+): Segment {
+  return { ...walk(at, at, 1, true, yaw), dur: HOLD_S, walking: false, hold, ...ranges };
+}
+
+/** Where someone hanging on at the back step stands, and the road behind it. */
+function backStep(place: Seat, L: CabinLayout) {
+  return {
+    on: [place.x, place.y ?? 0, place.z] as const,
+    road: [L.stepOutsideX, 0, place.z] as const,
+  };
+}
+
+/** Up onto the back step, to one side of the way in, and hold on (sabit). */
+function hangOn(L: CabinLayout, place: Seat): Segment[] {
+  const { on, road } = backStep(place, L);
+  return [
+    climb(road, on, 0, 0, { lean: [0, CLIMB_LEAN], stoop: [1, 1], reach: [0.2, 1] }),
+    holding(on, 0, [0, 1], { stoop: [1, 1], lean: [CLIMB_LEAN, 0], reach: [1, 0] }),
+  ];
+}
+
+/** Off the rail, a turn to face the street, and down off the back step. */
+function hangOff(L: CabinLayout, place: Seat): Segment[] {
+  const { on, road } = backStep(place, L);
+  return [
+    holding(on, 0, [1, 0], { stoop: [1, 1], lean: [0, 0.2], reach: [0, 1] }),
+    {
+      ...walk(on, on, 1, true, 0),
+      dur: TURN_S,
+      yaw1: Math.PI,
+      walking: false,
+      stoop: [1, 1],
+      lean: [0.2, 0.2],
+      reach: [1, 1],
+    },
+    climb(on, road, Math.PI, 0, { lean: [0.2, 0], stoop: [1, 1], reach: [1, 0] }),
+  ];
+}
+
+/** A seat free inside: off the rail, in from the back step, and down the aisle to it. */
+function stepInToSeat(L: CabinLayout, place: Seat, seat: Seat): Segment[] {
+  const { on } = backStep(place, L);
+  const floor = [L.insideX, L.floorY, AISLE_Z] as const;
+  return [
+    holding(on, 0, [1, 0], { stoop: [1, 1], lean: [0, CLIMB_LEAN], reach: [0, 1] }),
+    climb(on, floor, 0, 1, {
+      lean: [CLIMB_LEAN, CLIMB_LEAN],
+      stoop: [1, DUCK],
+      reach: [1, 0.4],
+    }),
+    ...aisleToSeat(L, seat),
+  ];
 }
 
 /** Alighting from `seat` out to `endX` on the road: stand, turn, aisle, step down, away. */
@@ -325,18 +407,99 @@ function turnAt(
   };
 }
 
-/** Where a sitter stands before sitting in `seat` (and after getting up). */
+/** Where a sitter stands before sitting in `seat` (and after getting up); a standing place itself. */
 function standingSpot(seat: Seat, C: CabinStyle): [number, number, number] {
+  if (seat.stands) return [seat.x, C.floorY, seat.z];
   return seat.standX !== undefined
     ? [seat.standX, C.floorY, seat.z]
     : [seat.x, C.floorY, seat.z * TURN_Z_FRACTION];
 }
 
+/** Along the inside of the cabin, holding on, stooped as its roof asks. */
+function cabinWalk(
+  C: CabinStyle,
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  mps: number,
+  yaw?: number,
+): Segment {
+  return {
+    ...walk(a, b, mps, true, yaw),
+    stoop: [C.stoop, C.stoop],
+    lean: [C.lean, C.lean],
+    reach: [C.reach, C.reach],
+  };
+}
+
+/**
+ * From `start` in the aisle into `seat`: a bench along the wall from the
+ * aisle, a row seat by shuffling along the row facing forward and sitting
+ * back; a standing place, by walking to it and taking hold of the rail.
+ */
+function intoPlace(
+  D: SideDoor,
+  C: CabinStyle,
+  seat: Seat,
+  start: readonly [number, number, number],
+): Segment[] {
+  const out: Segment[] = [];
+  const spot = standingSpot(seat, C);
+  if (seat.standX !== undefined) {
+    const rowEnd = [seat.standX, C.floorY, D.aisleZ] as const;
+    if (Math.abs(rowEnd[0] - start[0]) > 0.05) out.push(cabinWalk(C, start, rowEnd, C.aisleMps));
+    const facing = out[out.length - 1]?.yaw1 ?? 0;
+    out.push(turnAt(rowEnd, facing, 0, C, true));
+    // Sideways along the row, facing forward, to the seat.
+    if (Math.abs(spot[2] - rowEnd[2]) > 0.05) out.push(cabinWalk(C, rowEnd, spot, C.shuffleMps, 0));
+  } else {
+    const to = cabinWalk(C, start, spot, C.aisleMps);
+    out.push(to, turnAt(spot, to.yaw1, seat.yaw, C, true));
+  }
+  if (seat.stands) {
+    out.push(
+      holding(spot, seat.yaw, [0, 1], {
+        stoop: [C.stoop, C.stoop],
+        lean: [C.lean, 0],
+        reach: [C.reach, 0],
+      }),
+    );
+    return out;
+  }
+  out.push({
+    dur: SIT_S,
+    from: spot,
+    to: [seat.x, seat.y ?? C.seatedRootY, seat.z],
+    yaw0: seat.standX !== undefined ? 0 : seat.yaw,
+    yaw1: seat.standX !== undefined ? 0 : seat.yaw,
+    sit0: 0,
+    sit1: 1,
+    walking: false,
+    inside: true,
+    stoop: [C.stoop, 1],
+    lean: [C.lean, 0],
+    reach: [C.reach, 0],
+  });
+  return out;
+}
+
+/** A seat free: off the rail, a turn towards it, and along the aisle into it. */
+function standToSeat(D: SideDoor, C: CabinStyle, from: Seat, seat: Seat): Segment[] {
+  const at = standingSpot(from, C);
+  return [
+    holding(at, from.yaw, [1, 0], {
+      stoop: [C.stoop, C.stoop],
+      lean: [0, C.lean],
+      reach: [0, C.reach],
+    }),
+    turnAt(at, from.yaw, seat.x > at[0] ? 0 : Math.PI, C, true),
+    ...intoPlace(D, C, seat, at),
+  ];
+}
+
 /**
  * In through a side door to `seat`: along the pavement to the door, turn to
  * it, up each step (ducking under the opening, a hand on the poles), along
- * the aisle, then into the seat: a bench along the wall from the aisle, or
- * a row seat by shuffling along the row facing forward and sitting back.
+ * the aisle, then into the seat (intoPlace).
  */
 function sideDoorBoarding(
   D: SideDoor,
@@ -371,52 +534,16 @@ function sideDoorBoarding(
     from = to;
   });
   // Up: into the aisle, and along it to the seat.
-  const inside = (
-    a: readonly [number, number, number],
-    b: readonly [number, number, number],
-    mps: number,
-    yaw?: number,
-  ): Segment => ({
-    ...walk(a, b, mps, true, yaw),
-    stoop: [C.stoop, C.stoop],
-    lean: [C.lean, C.lean],
-    reach: [C.reach, C.reach],
-  });
   const aisle = [D.x, C.floorY, D.aisleZ] as const;
   if (Math.hypot(aisle[0] - from[0], aisle[2] - from[2]) > 0.05) {
     out.push({
-      ...inside(from, aisle, C.aisleMps),
+      ...cabinWalk(C, from, aisle, C.aisleMps),
       stoop: [D.duck, C.stoop],
       lean: [CLIMB_LEAN, C.lean],
     });
     from = aisle;
   }
-  const spot = standingSpot(seat, C);
-  if (seat.standX !== undefined) {
-    const rowEnd = [seat.standX, C.floorY, D.aisleZ] as const;
-    if (Math.abs(rowEnd[0] - from[0]) > 0.05) out.push(inside(from, rowEnd, C.aisleMps));
-    const facing = out[out.length - 1]!.yaw1;
-    out.push(turnAt(rowEnd, facing, 0, C, true));
-    // Sideways along the row, facing forward, to the seat.
-    if (Math.abs(spot[2] - rowEnd[2]) > 0.05) out.push(inside(rowEnd, spot, C.shuffleMps, 0));
-  } else {
-    out.push(inside(from, spot, C.aisleMps));
-    out.push(turnAt(spot, out[out.length - 1]!.yaw1, seat.yaw, C, true));
-  }
-  out.push({
-    dur: SIT_S,
-    from: spot,
-    to: [seat.x, seat.y ?? C.seatedRootY, seat.z],
-    yaw0: seat.standX !== undefined ? 0 : seat.yaw,
-    yaw1: seat.standX !== undefined ? 0 : seat.yaw,
-    sit0: 0,
-    sit1: 1,
-    walking: false,
-    inside: true,
-    stoop: [C.stoop, 1],
-    lean: [C.lean, 0],
-    reach: [C.reach, 0],
-  });
+  out.push(...intoPlace(D, C, seat, from));
   return out;
 }
 
@@ -425,42 +552,40 @@ function sideDoorAlighting(D: SideDoor, C: CabinStyle, seat: Seat): Segment[] {
   const out: Segment[] = [];
   const yawSeated = seat.standX !== undefined ? 0 : seat.yaw;
   const spot = standingSpot(seat, C);
-  const inside = (
-    a: readonly [number, number, number],
-    b: readonly [number, number, number],
-    mps: number,
-    yaw?: number,
-  ): Segment => ({
-    ...walk(a, b, mps, true, yaw),
-    stoop: [C.stoop, C.stoop],
-    lean: [C.lean, C.lean],
-    reach: [C.reach, C.reach],
-  });
-  out.push({
-    dur: SIT_S,
-    from: [seat.x, seat.y ?? C.seatedRootY, seat.z],
-    to: spot,
-    yaw0: yawSeated,
-    yaw1: yawSeated,
-    sit0: 1,
-    sit1: 0,
-    walking: false,
-    inside: true,
-    stoop: [1, C.stoop],
-    lean: [0, C.lean],
-    reach: [0, C.reach],
-  });
+  if (seat.stands)
+    out.push(
+      holding(spot, seat.yaw, [1, 0], {
+        stoop: [C.stoop, C.stoop],
+        lean: [0, C.lean],
+        reach: [0, C.reach],
+      }),
+    );
+  else
+    out.push({
+      dur: SIT_S,
+      from: [seat.x, seat.y ?? C.seatedRootY, seat.z],
+      to: spot,
+      yaw0: yawSeated,
+      yaw1: yawSeated,
+      sit0: 1,
+      sit1: 0,
+      walking: false,
+      inside: true,
+      stoop: [1, C.stoop],
+      lean: [0, C.lean],
+      reach: [0, C.reach],
+    });
   let from: readonly [number, number, number] = spot;
   const aisle = [D.x, C.floorY, D.aisleZ] as const;
   if (seat.standX !== undefined) {
     const rowEnd = [seat.standX, C.floorY, D.aisleZ] as const;
-    if (Math.abs(rowEnd[2] - from[2]) > 0.05) out.push(inside(from, rowEnd, C.shuffleMps, 0));
+    if (Math.abs(rowEnd[2] - from[2]) > 0.05) out.push(cabinWalk(C, from, rowEnd, C.shuffleMps, 0));
     from = rowEnd;
   }
   // Turn to the door along the aisle, and walk there.
   const toward = Math.abs(aisle[0] - from[0]) > 0.05 || Math.abs(aisle[2] - from[2]) > 0.05;
   if (toward) {
-    const w = inside(from, aisle, C.aisleMps);
+    const w = cabinWalk(C, from, aisle, C.aisleMps);
     out.push(turnAt(from, yawSeated, w.yaw0, C, true));
     out.push(w);
     from = aisle;
@@ -471,7 +596,7 @@ function sideDoorAlighting(D: SideDoor, C: CabinStyle, seat: Seat): Segment[] {
   out.push(turnAt(from, out[out.length - 1]!.yaw1, FACING_OUT, C, true));
   if (Math.hypot(head[0] - from[0], head[2] - from[2]) > 0.05) {
     out.push({
-      ...inside(from, head, C.aisleMps, FACING_OUT),
+      ...cabinWalk(C, from, head, C.aisleMps, FACING_OUT),
       stoop: [C.stoop, D.duck],
       lean: [C.lean, CLIMB_LEAN],
     });
@@ -506,36 +631,34 @@ const clamp01 = (u: number) => Math.min(1, Math.max(0, u));
 const lerp = (r: Range | undefined, fallback: number, u: number) =>
   r ? r[0] + (r[1] - r[0]) * u : fallback;
 
-function evaluate(segs: readonly Segment[], t: number, out: RiderPose): RiderPose {
-  let start = 0;
-  let travelled = 0;
-  for (const s of segs) {
-    const len = Math.hypot(s.to[0] - s.from[0], s.to[2] - s.from[2]);
-    if (t < start + s.dur || s === segs[segs.length - 1]) {
-      const u = clamp01((t - start) / s.dur);
-      // Walking is constant speed; everything else eases in and out.
-      const e = s.walking || s.travelling ? u : smooth(u);
-      // On a step the body moves forward first and rises (or drops) once the
-      // climbing foot is planted: height trails the forward motion.
-      const ey = s.climbLeg === undefined ? e : smooth(clamp01((u - 0.3) / 0.55));
-      out.x = s.from[0] + (s.to[0] - s.from[0]) * e;
-      out.y = s.from[1] + (s.to[1] - s.from[1]) * ey;
-      out.z = s.from[2] + (s.to[2] - s.from[2]) * e;
-      out.yaw = lerpAngle(s.yaw0, s.yaw1, e);
-      out.sit = s.sit0 + (s.sit1 - s.sit0) * e;
-      out.walk = s.walking ? 1 : 0;
-      out.phase = (travelled + len * e) * STRIDE_PER_M;
-      out.stoop = lerp(s.stoop, s.inside ? STOOP + (1 - STOOP) * out.sit : 1, e);
-      out.lean = lerp(s.lean, 0, e);
-      out.reach = lerp(s.reach, 0, e);
-      // The climbing knee comes up, plants on the step, and the leg straightens.
-      out.lift = s.climbLeg === undefined ? 0 : Math.sin(Math.PI * clamp01(u / 0.8));
-      out.liftLeg = s.climbLeg ?? 0;
-      return out;
-    }
-    start += s.dur;
-    if (s.walking) travelled += len;
-  }
+/** The pose `t` seconds into `s`, `len` metres long, after `travelled` metres on foot. */
+function evaluate(
+  s: Segment,
+  t: number,
+  len: number,
+  travelled: number,
+  out: RiderPose,
+): RiderPose {
+  const u = clamp01(t / s.dur);
+  // Walking is constant speed; everything else eases in and out.
+  const e = s.walking || s.travelling ? u : smooth(u);
+  // On a step the body moves forward first and rises (or drops) once the
+  // climbing foot is planted: height trails the forward motion.
+  const ey = s.climbLeg === undefined ? e : smooth(clamp01((u - 0.3) / 0.55));
+  out.x = s.from[0] + (s.to[0] - s.from[0]) * e;
+  out.y = s.from[1] + (s.to[1] - s.from[1]) * ey;
+  out.z = s.from[2] + (s.to[2] - s.from[2]) * e;
+  out.yaw = lerpAngle(s.yaw0, s.yaw1, e);
+  out.sit = s.sit0 + (s.sit1 - s.sit0) * e;
+  out.walk = s.walking ? 1 : 0;
+  out.phase = (travelled + len * e) * STRIDE_PER_M;
+  out.stoop = lerp(s.stoop, s.inside ? STOOP + (1 - STOOP) * out.sit : 1, e);
+  out.lean = lerp(s.lean, 0, e);
+  out.reach = lerp(s.reach, 0, e);
+  out.hold = lerp(s.hold, 0, e);
+  // The climbing knee comes up, plants on the step, and the leg straightens.
+  out.lift = s.climbLeg === undefined ? 0 : Math.sin(Math.PI * clamp01(u / 0.8));
+  out.liftLeg = s.climbLeg ?? 0;
   return out;
 }
 
@@ -543,10 +666,27 @@ function evaluate(segs: readonly Segment[], t: number, out: RiderPose): RiderPos
 export class RiderMotion {
   readonly duration: number;
   private readonly segs: Segment[];
+  /** When each segment ends, how long it is, and the metres on foot before it. */
+  private readonly ends: Float64Array;
+  private readonly lengths: Float64Array;
+  private readonly walked: Float64Array;
 
   private constructor(segs: Segment[]) {
     this.segs = segs;
     this.duration = total(segs);
+    this.ends = new Float64Array(segs.length);
+    this.lengths = new Float64Array(segs.length);
+    this.walked = new Float64Array(segs.length);
+    let end = 0;
+    let walked = 0;
+    segs.forEach((s, i) => {
+      end += s.dur;
+      const len = Math.hypot(s.to[0] - s.from[0], s.to[2] - s.from[2]);
+      this.ends[i] = end;
+      this.lengths[i] = len;
+      this.walked[i] = walked;
+      if (s.walking) walked += len;
+    });
   }
 
   static boarding(L: CabinLayout, seat: Seat, startX: number, lane = 0): RiderMotion {
@@ -554,7 +694,17 @@ export class RiderMotion {
   }
 
   static alighting(L: CabinLayout, seat: Seat, endX: number, lane = 0): RiderMotion {
-    return new RiderMotion(alightingSegments(L, seat, endX, lane));
+    return new RiderMotion(seat.stands ? hangOff(L, seat) : alightingSegments(L, seat, endX, lane));
+  }
+
+  /** In from the back step, a seat having come free. */
+  static stepIn(L: CabinLayout, place: Seat, seat: Seat): RiderMotion {
+    return new RiderMotion(stepInToSeat(L, place, seat));
+  }
+
+  /** From a standing place to a seat that has come free, along the aisle `door` opens onto. */
+  static standToSeat(door: SideDoor, cabin: CabinStyle, from: Seat, seat: Seat): RiderMotion {
+    return new RiderMotion(standToSeat(door, cabin, from, seat));
   }
 
   /** Follow an explicit approach behind the vehicle before using its door. */
@@ -564,7 +714,8 @@ export class RiderMotion {
     points: readonly (readonly [number, number, number])[],
   ): RiderMotion {
     const approach = points.slice(1).map((p, i) => walk(points[i]!, p, WALK_MPS, false));
-    return new RiderMotion([...approach, ...boardingSegments(L, seat, L.stepOutsideX, 0)]);
+    const rest = seat.stands ? hangOn(L, seat) : boardingSegments(L, seat, L.stepOutsideX, 0);
+    return new RiderMotion([...approach, ...rest]);
   }
 
   /** In through a side door (modern jeepney, UV Express, bus) to `seat`, from `start` on the pavement. */
@@ -600,6 +751,22 @@ export class RiderMotion {
     );
   }
 
+  /** Riding, not on foot (a tricycle). */
+  get riding(): boolean {
+    return this.segs[0]?.travelling === true;
+  }
+
+  /** The points of the way still to come after `t` seconds, in order. */
+  pointsAfter(t: number): Array<readonly [number, number, number]> {
+    const out: Array<readonly [number, number, number]> = [];
+    let end = 0;
+    for (const s of this.segs) {
+      end += s.dur;
+      if (end > t) out.push(s.to);
+    }
+    return out;
+  }
+
   /** Ground-path metres left at the same position as poseAt(t). */
   remainingDistance(t: number): number {
     let start = 0;
@@ -626,9 +793,24 @@ export class RiderMotion {
     return this.duration;
   }
 
-  /** Pose at `t` seconds since the motion started (clamped to its ends). */
+  /**
+   * Pose at `t` seconds since the motion started (clamped to its ends). Asked
+   * for every rider, every step, and a walk along the streets has hundreds of
+   * segments: so the segment is looked up, not walked to from the start.
+   */
   poseAt(t: number, out: RiderPose): RiderPose {
-    return evaluate(this.segs, Math.max(0, t), out);
+    const { ends, segs } = this;
+    if (segs.length === 0) return out;
+    const at = Math.max(0, t);
+    let low = 0;
+    let high = segs.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (at < ends[middle]!) high = middle;
+      else low = middle + 1;
+    }
+    const start = low > 0 ? ends[low - 1]! : 0;
+    return evaluate(segs[low]!, at - start, this.lengths[low]!, this.walked[low]!, out);
   }
 }
 
@@ -646,6 +828,25 @@ export function seatedAt(L: CabinLayout, seat: Seat, out: RiderPose): RiderPose 
   out.lift = 0;
   out.liftLeg = 0;
   out.reach = 0;
+  out.hold = 0;
+  return out;
+}
+
+/** Pose of someone standing still in `place`, hands on its rails. */
+export function standingAt(place: Seat, stoop: number, out: RiderPose): RiderPose {
+  out.x = place.x;
+  out.y = place.y!;
+  out.z = place.z;
+  out.yaw = place.yaw;
+  out.sit = 0;
+  out.walk = 0;
+  out.phase = 0;
+  out.stoop = stoop;
+  out.lean = 0;
+  out.lift = 0;
+  out.liftLeg = 0;
+  out.reach = 0;
+  out.hold = 1;
   return out;
 }
 
@@ -662,4 +863,5 @@ export const newRiderPose = (): RiderPose => ({
   lift: 0,
   liftLeg: 0,
   reach: 0,
+  hold: 0,
 });

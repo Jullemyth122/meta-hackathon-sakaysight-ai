@@ -39,6 +39,8 @@ const SNAP_M = 0.5;
 const JOIN_M = 3;
 /** Spatial index cell (metres). */
 const CELL_M = 25;
+/** A metre of a street being gone round counts as this many. */
+const AVOID_COST = 6;
 /**
  * A side street is a way in to a stop when it meets the road (comes within
  * STREET_END_M of the stop's pavement) up to this far along it (metres).
@@ -106,7 +108,15 @@ export function inLane(
   widths: readonly number[],
   lane: Lane,
 ): Point3[] {
-  // Without repeated points: a stretch of no length has no direction.
+  const { p, w } = withoutRepeats(pts, widths);
+  return shiftedBy(
+    p,
+    w.map((width) => laneOffset(lane, width)),
+  );
+}
+
+/** Points without repeats: a stretch of no length has no direction. */
+function withoutRepeats(pts: readonly LocalPoint[], widths: readonly number[]) {
   const p: LocalPoint[] = [];
   const w: number[] = [];
   pts.forEach((q, i) => {
@@ -115,12 +125,16 @@ export function inLane(
     if (last) w.push(widths[i - 1] ?? 0);
     p.push(q);
   });
+  return { p, w };
+}
+
+/** Points `p` with each stretch moved `offs[i]` to the right, corners where the moved stretches meet. */
+function shiftedBy(p: readonly LocalPoint[], offs: readonly number[]): Point3[] {
   if (p.length < 2) return p.map((q) => [q.x, 0, q.z]);
   const dirs = p.slice(1).map((q, i) => {
     const len = Math.hypot(q.x - p[i]!.x, q.z - p[i]!.z);
     return { x: (q.x - p[i]!.x) / len, z: (q.z - p[i]!.z) / len };
   });
-  const offs = w.map((width) => laneOffset(lane, width));
   // Right of a direction (dx, dz) is (−dz, dx), as in stopLayout.ts.
   const shifted = (q: LocalPoint, d: LocalPoint, o: number): Point3 => [
     q.x - d.z * o,
@@ -154,6 +168,151 @@ export function inLane(
   }
   out.push(shifted(p[p.length - 1]!, dirs[dirs.length - 1]!, offs[offs.length - 1]!));
   return out;
+}
+
+/** The way is looked at this far back from its end to tell which side of the road it ends on (metres). */
+const END_LOOK_M = 5;
+/** Beyond this many times its kerb offset, a spot is off the road: gone to from the kerb. */
+const OFF_THE_KERB = 1.5;
+/** A sideways turn this sharp ends a road (a stretch of the same width is another road). */
+const NEW_ROAD_COS = Math.cos((50 * Math.PI) / 180);
+/** Stretches compared when looking for a line that crosses itself. */
+const TANGLE_WINDOW = 24;
+/** Corners turning more than this are rounded (radians)… */
+const ROUND_FROM = 0.15;
+/** …starting this far before the corner (metres), or less of a short stretch… */
+const ROUND_M = 12;
+const ROUND_SHARE = 0.45;
+/** …in this many steps for each radian of the turn. */
+const ROUND_STEPS = 9;
+
+/** Where stretches a–b and c–d cross, if they do. */
+function crossing(a: Point3, b: Point3, c: Point3, d: Point3): Point3 | null {
+  const ex = b[0] - a[0];
+  const ez = b[2] - a[2];
+  const fx = d[0] - c[0];
+  const fz = d[2] - c[2];
+  const cross = ex * fz - ez * fx;
+  if (cross === 0) return null;
+  const t = ((c[0] - a[0]) * fz - (c[2] - a[2]) * fx) / cross;
+  const u = ((c[0] - a[0]) * ez - (c[2] - a[2]) * ex) / cross;
+  return t > 0 && t < 1 && u > 0 && u < 1 ? [a[0] + ex * t, 0, a[2] + ez * t] : null;
+}
+
+/** The line without the loops and spikes a sideways shift makes on the inside of a turn. */
+function untangled(line: readonly Point3[]): Point3[] {
+  const out: Point3[] = [];
+  for (let i = 0; i < line.length; i++) {
+    out.push(line[i]!);
+    if (i + 1 >= line.length) break;
+    // The furthest stretch this one crosses: all between is the loop.
+    for (let j = Math.min(line.length - 2, i + TANGLE_WINDOW); j > i + 1; j--) {
+      const at = crossing(line[i]!, line[i + 1]!, line[j]!, line[j + 1]!);
+      if (!at) continue;
+      out.push(at);
+      i = j;
+      break;
+    }
+  }
+  return out;
+}
+
+/** The line with its corners rounded. */
+export function rounded(line: readonly Point3[]): Point3[] {
+  if (line.length < 3) return [...line];
+  const out: Point3[] = [line[0]!];
+  for (let i = 1; i + 1 < line.length; i++) {
+    const a = line[i - 1]!;
+    const q = line[i]!;
+    const b = line[i + 1]!;
+    const inX = q[0] - a[0];
+    const inZ = q[2] - a[2];
+    const outX = b[0] - q[0];
+    const outZ = b[2] - q[2];
+    const lenIn = Math.hypot(inX, inZ);
+    const lenOut = Math.hypot(outX, outZ);
+    const turn = Math.acos(
+      Math.max(-1, Math.min(1, (inX * outX + inZ * outZ) / (lenIn * lenOut || 1))),
+    );
+    if (turn < ROUND_FROM) {
+      out.push(q);
+      continue;
+    }
+    const before = Math.min(ROUND_M, lenIn * ROUND_SHARE) / (lenIn || 1);
+    const after = Math.min(ROUND_M, lenOut * ROUND_SHARE) / (lenOut || 1);
+    const sx = q[0] - inX * before;
+    const sz = q[2] - inZ * before;
+    const ex = q[0] + outX * after;
+    const ez = q[2] + outZ * after;
+    const steps = Math.ceil(turn * ROUND_STEPS);
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps;
+      const u = 1 - t;
+      out.push([
+        u * u * sx + 2 * u * t * q[0] + t * t * ex,
+        0,
+        u * u * sz + 2 * u * t * q[2] + t * t * ez,
+      ]);
+    }
+  }
+  out.push(line[line.length - 1]!);
+  return out;
+}
+
+/**
+ * A way by the streets as it is gone and as it is drawn: one smooth line to
+ * `goal` at the side of the road. It keeps to the side of the road `goal` is
+ * on, so nobody walks the far kerb and cuts across to it; on foot all the way,
+ * a tricycle in its lane until that last road. Turns are rounded, and where a
+ * turn folds back (a side road meeting a highway at a slant) it goes round
+ * inside the corner, not out to the junction and back.
+ */
+export function wayLine(
+  pts: readonly LocalPoint[],
+  widths: readonly number[],
+  mode: 'walk' | 'tricycle',
+  goal: LocalPoint = pts[pts.length - 1]!,
+): Point3[] {
+  const { p, w } = withoutRepeats(pts, widths);
+  const end: Point3 = [goal.x, 0, goal.z];
+  let last = w.length - 1;
+  while (last >= 0 && w[last] === 0) last--;
+  if (last < 0) return rounded([...p.map((q): Point3 => [q.x, 0, q.z]), end]);
+  // Which side of the end of that road `goal` is on, right of the way along it.
+  const on = p[last + 1]!;
+  let k = last;
+  while (k > 0 && Math.hypot(on.x - p[k]!.x, on.z - p[k]!.z) < END_LOOK_M) k--;
+  const dx = on.x - p[k]!.x;
+  const dz = on.z - p[k]!.z;
+  const lane: Lane = -dz * (goal.x - on.x) + dx * (goal.z - on.z) >= 0 ? 'right' : 'left';
+  // The last road starts where the way turned onto it.
+  let from = last;
+  const dirOf = (i: number) => {
+    const len = Math.hypot(p[i + 1]!.x - p[i]!.x, p[i + 1]!.z - p[i]!.z);
+    return { x: (p[i + 1]!.x - p[i]!.x) / len, z: (p[i + 1]!.z - p[i]!.z) / len };
+  };
+  while (from > 0 && w[from - 1]! > 0) {
+    const a = dirOf(from - 1);
+    const b = dirOf(from);
+    if (a.x * b.x + a.z * b.z < NEW_ROAD_COS) break;
+    from--;
+  }
+  const offs = w
+    .slice(0, last + 1)
+    .map((width, i) => laneOffset(mode === 'walk' || i >= from ? lane : 'drive', width));
+  const line = shiftedBy(p.slice(0, last + 2), offs);
+  // The kerb is about where `goal` stands; further, on to it from there.
+  const away = Math.hypot(goal.x - on.x, goal.z - on.z);
+  if (away <= Math.abs(offs[last]!) * OFF_THE_KERB) line.pop();
+  // Never past it and back.
+  while (line.length >= 2) {
+    const a = line[line.length - 2]!;
+    const b = line[line.length - 1]!;
+    if ((end[0] - b[0]) * (b[0] - a[0]) + (end[2] - b[2]) * (b[2] - a[2]) >= 0) break;
+    line.pop();
+  }
+  line.push(end);
+  return rounded(untangled(line));
 }
 
 /** Shortest street distances from the starts, and the way back to them. */
@@ -460,6 +619,13 @@ export class StreetGraph {
     return width;
   }
 
+  /** Whether the street from node `a` to its neighbour `b` is a national road. */
+  nationalRoad(a: number, b: number): boolean {
+    const edges = this.adj[a]!;
+    for (let k = 0; k < edges.length; k += EDGE) if (edges[k] === b && edges[k + 3]) return true;
+    return false;
+  }
+
   /**
    * The street point nearest `p` within `within` metres, on a segment a–b
    * that passes `accept`: on the segment, not only at its ends. Null when
@@ -500,6 +666,38 @@ export class StreetGraph {
     return best;
   }
 
+  /** Whether the straight line from `a` to node `to` crosses a street on its way there. */
+  crossesStreet(a: LocalPoint, to: number): boolean {
+    const bx = this.x[to]!;
+    const bz = this.z[to]!;
+    const dx = bx - a.x;
+    const dz = bz - a.z;
+    const minX = Math.floor(Math.min(a.x, bx) / CELL_M);
+    const maxX = Math.floor(Math.max(a.x, bx) / CELL_M);
+    const minZ = Math.floor(Math.min(a.z, bz) / CELL_M);
+    const maxZ = Math.floor(Math.max(a.z, bz) / CELL_M);
+    for (let cx = minX; cx <= maxX; cx++)
+      for (let cz = minZ; cz <= maxZ; cz++) {
+        const pairs = inCell(this.segmentCells, cellKey(cx, cz));
+        for (let k = 0; k < pairs.length; k += 2) {
+          const p = pairs[k]!;
+          const q = pairs[k + 1]!;
+          // The street the line ends on is the one it is going to.
+          if (p === to || q === to) continue;
+          const ex = this.x[q]! - this.x[p]!;
+          const ez = this.z[q]! - this.z[p]!;
+          const cross = dx * ez - dz * ex;
+          if (cross === 0) continue;
+          const ax = this.x[p]! - a.x;
+          const az = this.z[p]! - a.z;
+          const along = (ax * ez - az * ex) / cross;
+          const onStreet = (ax * dz - az * dx) / cross;
+          if (along > 0 && along < 1 && onStreet >= 0 && onStreet <= 1) return true;
+        }
+      }
+    return false;
+  }
+
   /**
    * Street nodes `nodes` (in going order) as a way in `lane`; from `start`
    * first when given: a point on a street `width` wide leading to the first
@@ -538,9 +736,16 @@ export class StreetGraph {
 
   /**
    * Every node within `maxM` along the streets of the nearest of `from`
-   * (node, metres already gone to reach it): Dijkstra from many starts.
+   * (node, metres already gone to reach it): Dijkstra from many starts. Each
+   * metre of national road counts as `national` metres, and of street
+   * between nodes in `avoid` as AVOID_COST.
    */
-  reach(from: ReadonlyArray<readonly [number, number]>, maxM: number): Reach {
+  reach(
+    from: ReadonlyArray<readonly [number, number]>,
+    maxM: number,
+    national = 1,
+    avoid?: ReadonlySet<number>,
+  ): Reach {
     const dist = new Float64Array(this.size).fill(Infinity);
     const prev = new Int32Array(this.size).fill(-1);
     const heap = new MinHeap();
@@ -555,7 +760,8 @@ export class StreetGraph {
       const edges = this.adj[n]!;
       for (let k = 0; k < edges.length; k += EDGE) {
         const m = edges[k]!;
-        const nd = d + edges[k + 1]!;
+        const cost = avoid?.has(n) && avoid.has(m) ? AVOID_COST : 1;
+        const nd = d + edges[k + 1]! * (edges[k + 3] ? national : 1) * cost;
         if (nd > maxM || nd >= dist[m]!) continue;
         dist[m] = nd;
         prev[m] = n;

@@ -8,20 +8,23 @@
 .app {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   height: 100%;
-  padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
 }
 
 .header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 20px;
+  gap: 8px 20px;
+  min-height: 52px;
+  padding: 8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
 
   &__status {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
     margin-left: auto;
   }
@@ -30,29 +33,22 @@
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 
   h1 {
-    margin: 0;
-    font-family: $font-display;
-    font-size: 20px;
-    font-weight: 800;
-    font-stretch: 125%;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
     line-height: 1;
-  }
-
-  &__sub {
-    color: var(--muted);
-    font-size: 12px;
   }
 
   &__mark {
     display: grid;
-    gap: 3px;
-    width: 26px;
+    gap: 2px;
+    width: 20px;
 
     i {
-      height: 5px;
+      height: 4px;
       border-radius: 2px;
       background: var(--accent);
     }
@@ -67,33 +63,9 @@
   }
 }
 
-.tabs {
-  display: flex;
-  gap: 4px;
-
-  button {
-    padding: 8px 14px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--surface);
-    font-family: $font-display;
-    font-size: 13px;
-    font-weight: 600;
-    font-stretch: 112%;
-    cursor: pointer;
-
-    &.is-on {
-      background: var(--fg);
-      border-color: var(--fg);
-      color: var(--bg);
-    }
-  }
-}
-
 .stage {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 372px;
   flex: 1;
   min-height: 0;
 
@@ -107,8 +79,6 @@
   position: relative;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 14px;
   background: var(--surface-2);
 
   canvas {
@@ -147,10 +117,8 @@
 .panel {
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  border-left: 1px solid var(--line);
   background: var(--surface);
-  box-shadow: var(--shadow);
 
   &__body {
     display: flex;
@@ -171,6 +139,10 @@
 .simulation-fields__wide {
   grid-column: 1 / -1;
 }
+.simulation-panel label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
 .simulation-panel input,
 .simulation-panel select {
   width: 100%;
@@ -180,6 +152,13 @@
   border-radius: 6px;
   background: var(--bg);
   color: var(--fg);
+}
+
+// Search and filter fields of the passenger list.
+.passenger-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
 }
 
 .passenger-list {
@@ -209,31 +188,33 @@
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
 
+  // Kept mounted, not shown (the driver's Ask, listening behind the other tabs).
+  &[hidden] {
+    display: none;
+  }
+
   &:last-child {
     border-bottom: 0;
   }
 
   &__title {
     margin: 0;
-    color: var(--muted);
-    font-family: $font-display;
-    font-size: 11.5px;
-    font-weight: 700;
-    font-stretch: 118%;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
+    font-size: 13px;
+    font-weight: 600;
   }
 
   &__subtitle {
     margin: 4px 0 0;
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 600;
   }
 }
 
 .route__name {
   margin: 0;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .session {
@@ -282,8 +263,9 @@
     font-size: 11.5px;
   }
   &__value {
-    font-size: 26px;
-    font-weight: 500;
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
     transform-origin: left center;
   }
   &__note {
@@ -313,6 +295,28 @@
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--surface-2);
+  }
+
+  &__photo-preview {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+
+    img {
+      display: block;
+      width: 96px;
+      height: 64px;
+      border-radius: 8px;
+      object-fit: cover;
+    }
+  }
+
+  &__photo-thumb {
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    cursor: zoom-in;
   }
 
   &__answer {
@@ -346,12 +350,73 @@
     overflow: visible;
   }
 
-  .brand__sub {
-    display: none;
+  .scenes {
+    position: static;
+  }
+
+  .assist {
+    scroll-margin-top: 8px;
+  }
+
+  .panel {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 }
 
 // ---- Twin viewport overlay -------------------------------------------------
+
+.demo-flag {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ride-hud {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+
+  &__speed {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: baseline;
+    column-gap: 5px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+
+    strong {
+      font-size: 26px;
+      line-height: 1.1;
+    }
+
+    span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    small {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 11px;
+    }
+  }
+}
 
 // Top left: the camera toolbar, with the ride card under it. A column, so the
 // card always sits below the toolbar whatever its height.
@@ -393,8 +458,12 @@
 
   // The longest option ("Choose jeepney (or click in 3D)…") need not set the width.
   &__select {
-    max-width: 180px;
+    max-width: 190px;
     color: var(--fg);
+  }
+
+  .seg {
+    box-shadow: var(--shadow);
   }
 }
 
@@ -515,13 +584,6 @@
     align-items: center;
     gap: 8px;
   }
-
-  &__hint {
-    padding-top: 6px;
-    border-top: 1px solid var(--line);
-    color: var(--muted);
-    font-size: 11px;
-  }
 }
 
 .fleet-grid {
@@ -600,10 +662,8 @@
   &--town,
   &--city {
     color: #4b5160;
-    font-family: $font-display;
-    font-size: 13px;
-    font-weight: 700;
-    font-stretch: 118%;
+    font-size: 12px;
+    font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -614,17 +674,60 @@
     font-size: 11px;
   }
 
+  // Street names, as a printed map has them; landmarks with a marker before
+  // the name; rail stations as a dark pill.
+  &--road,
+  &--street {
+    color: #5b6170;
+    font-style: italic;
+    font-weight: 600;
+  }
+
+  &--road {
+    font-size: 12px;
+  }
+
+  &--street {
+    font-size: 10.5px;
+  }
+
+  &--landmark {
+    color: #3a4150;
+    font-size: 11px;
+
+    &::before {
+      content: '◆ ';
+      color: #b4632b;
+      font-size: 8px;
+    }
+  }
+
+  &--station {
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #3b3f4a;
+    color: #fff;
+    font-size: 11px;
+    text-shadow: none;
+  }
+
+  // A stop's name like the sign at the stop: ink, the plate yellow down its side.
   &--stop,
   &--terminal {
-    padding: 2px 7px;
-    border-radius: 6px;
-    background: #2a4bd7;
+    padding: 2px 7px 2px 6px;
+    border-left: 3px solid #f2c12e;
+    border-radius: 3px;
+    background: #1f2a3d;
     color: #fff;
     text-shadow: none;
     box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
   }
 
+  // A terminal: the yellow board itself.
   &--terminal {
+    border-left-color: #1f2a3d;
+    background: #f2c12e;
+    color: #1c1b18;
     font-size: 12.5px;
     font-weight: 800;
   }
@@ -683,6 +786,7 @@
 
   // A planned trip on the map: its ends, where to board and get off, the way between.
   &--trip-from,
+  &--trip-waiting,
   &--trip-to,
   &--trip-board,
   &--trip-alight,
@@ -699,6 +803,10 @@
 
   &--trip-from {
     background: #15803d;
+  }
+
+  &--trip-waiting {
+    background: #b45309;
   }
 
   &--trip-to {
@@ -761,7 +869,6 @@
 
   h2 {
     margin: 0;
-    font-family: $font-display;
     font-size: 18px;
   }
 
@@ -928,7 +1035,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
@@ -939,4 +1046,33 @@
   align-self: center;
   box-shadow: var(--shadow);
   font-variant-numeric: tabular-nums;
+}
+
+// A photo seen full size, over everything, until tapped.
+.photo-view {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 0.82);
+  cursor: zoom-out;
+
+  img {
+    max-width: min(100%, 1200px);
+    max-height: calc(100% - 48px);
+    border-radius: 8px;
+    object-fit: contain;
+    box-shadow: 0 8px 30px rgb(0 0 0 / 0.5);
+  }
+
+  &__close {
+    color: #fff;
+    font-size: 13px;
+    opacity: 0.8;
+  }
 }

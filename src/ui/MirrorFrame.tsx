@@ -30,7 +30,7 @@ export function MirrorFrame({ container }: { container: RefObject<HTMLElement | 
         top: MIRROR_LAYOUT.top,
         right: MIRROR_LAYOUT.margin,
       }}
-      aria-label="Rear-view mirror: the road behind the jeepney"
+      aria-label="Rear-view mirror: the road behind the vehicle"
     >
       <span className="mirror-frame__label">Rear view</span>
     </div>

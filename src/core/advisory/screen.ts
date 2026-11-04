@@ -19,6 +19,7 @@ import type { Dispatch } from './dispatch';
 import type { DriverView } from './driver';
 import { ADVISORY, type TwinState } from './model';
 import { incomingAtStop } from './approach';
+import { KIND_WORD } from '../vehicles/specs';
 
 /** Commute words a general speech model may mishear, in Tagalog and English. */
 const COMMUTE_WORDS = [
@@ -53,7 +54,9 @@ function spoken(name: string): string {
  */
 export function voiceKeywords(route: Route): string[] {
   const names = route.stops.flatMap((s) => [s.name, spoken(s.name)]);
-  return [...new Set([...names, ...COMMUTE_WORDS])].filter(
+  // The commute words first: the transcriber takes so many words, and a long
+  // route's stops would otherwise crowd "pamasahe" and "bayad" out.
+  return [...new Set([...COMMUTE_WORDS, ...names])].filter(
     (w) => w.length > 0 && w.length <= MAX_KEYWORD_CHARS,
   );
 }
@@ -94,7 +97,14 @@ export function driverScreen(v: DriverView, fuel: readonly FuelStop[] = []) {
       };
     })(),
     dieselPrices: `DOE NCR monitoring, week ${DIESEL_WEEK}: the brand's lowest–highest pump price in Caloocan and Quezon City, not this station's own price; expected = middle of that range`,
+    /** Waiting by the side of the road ahead, not at a stop: stop for them where they stand. */
+    waitingByTheRoad: v.roadside.map((r) => ({
+      metresAhead: m(r.distanceM),
+      etaMin: min(r.etaS),
+      canTake: r.canTake,
+    })),
     plate: v.plate,
+    vehicle: KIND_WORD[v.kind],
     seats: v.seats,
     sightM: ADVISORY.horizonM,
     nextStops: v.ahead.map((s) => ({
@@ -136,6 +146,8 @@ export function commuterScreen(v: CommuterView) {
   return {
     phase: v.phase,
     stop: v.stop.name,
+    /** Waiting by the side of the road before that stop, not at it: vehicles stop for them there. */
+    byTheRoad: v.roadside,
     destination: v.destination.name,
     approachingStop: v.approach
       ? {
@@ -148,6 +160,7 @@ export function commuterScreen(v: CommuterView) {
     queuedAheadOfYou: v.queueAhead,
     arrivals: v.arrivals.map((a) => ({
       plate: a.plate,
+      vehicle: KIND_WORD[a.kind],
       etaMin: min(a.etaS),
       distanceM: m(a.distanceM),
       freeSeats: a.freeSeats,
@@ -156,7 +169,12 @@ export function commuterScreen(v: CommuterView) {
     })),
     yourJeepney: v.pickup?.plate ?? null,
     onBoard: v.riding
-      ? { plate: v.riding.plate, remainingM: m(v.riding.remainingM), etaMin: min(v.riding.etaS) }
+      ? {
+          plate: v.riding.plate,
+          vehicle: KIND_WORD[v.riding.kind],
+          remainingM: m(v.riding.remainingM),
+          etaMin: min(v.riding.etaS),
+        }
       : null,
     fare: v.trip.fare,
     fareDiscounted: v.trip.fareDiscounted,

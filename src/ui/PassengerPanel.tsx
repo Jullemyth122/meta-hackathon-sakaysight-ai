@@ -39,26 +39,30 @@ export function PassengerPanel() {
   const stopName = (index: number) => twin.route.stops[index]?.name ?? 'Unknown stop';
 
   return (
-    <section className="section" aria-label="Passenger journeys">
-      <h3 className="section__title">Passenger journeys</h3>
-      <p className="muted">
-        Same person from queue to destination. Blue areas: waiting. Green areas: arrivals. Journeys
-        reset when the route is reloaded.
+    <div className="fold__body" aria-label="Passenger journeys">
+      <p className="fine">
+        The same person from queue to destination. On the map, blue areas are waiting and green are
+        arrivals.
       </p>
-      <label>
-        Show{' '}
-        <select value={scope} onChange={(e) => setScope(e.target.value)}>
+      <div className="passenger-tools">
+        <select
+          className="input"
+          aria-label="Which passengers"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+        >
           <option value="vehicle">Followed vehicle / all</option>
           <option value="walking">Getting off &amp; arrived</option>
           <option value="all">Everyone</option>
         </select>
-      </label>
-      <input
-        aria-label="Find passenger ID"
-        placeholder="Find ID, e.g. P0001"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+        <input
+          className="input"
+          aria-label="Find passenger ID"
+          placeholder="Find ID, e.g. P0001"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
       {selected && (
         <div className="passenger-selected">
           <strong>
@@ -109,6 +113,6 @@ export function PassengerPanel() {
           : `${visible.length} passengers`}{' '}
         · {twin.crew.delivered + people.filter((r) => r.phase === 'arrived').length} arrived
       </small>
-    </section>
+    </div>
   );
 }

@@ -411,6 +411,12 @@ describe('streets built in a worker', () => {
         starts: new Uint32Array(starts),
         widths: new Float32Array(ls.map(() => MINOR_M)),
         national: new Uint8Array(ls.length),
+        risky: new Uint8Array(ls.length),
+        hazards: {
+          points: new Float32Array(),
+          starts: new Uint32Array([0]),
+          kinds: new Uint8Array(),
+        },
       };
     };
     const built = buildStreets(streetsRoute(route), [flat(lines)]);

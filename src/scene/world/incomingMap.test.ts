@@ -93,6 +93,8 @@ describe('incoming commuters on the map', () => {
 
   it('does not call a person still on their way arrived', () => {
     expect(approachTime(20)).toBe('20 s');
-    expect(approachTime(61)).toBe('2 min');
+    expect(approachTime(65)).toBe('65 s');
+    expect(approachTime(130)).toBe('2 min');
+    expect(approachTime(170)).toBe('3 min');
   });
 });

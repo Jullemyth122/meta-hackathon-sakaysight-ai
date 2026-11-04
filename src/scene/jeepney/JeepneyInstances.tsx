@@ -18,6 +18,7 @@ import {
   Object3D,
   Ray,
   Vector3,
+  type BufferGeometry,
   type InstancedMesh,
   type Intersection,
   type Raycaster,
@@ -28,19 +29,21 @@ import { PeopleInstances, type PeopleHandle } from '../people/PeopleInstances';
 import {
   appearance,
   driverAppearance,
+  holdRails,
   poseFromMotion,
   rootFor,
   STANDING,
   type PersonPose,
 } from '../people/personRig';
-import { crewSeed, riderSeed, SEATS } from './crew';
-import type { CrewState } from './crewState';
+import { crewSeed, PLACES, riderSeed, SEATS } from './crew';
+import { isPregnant, type CrewState } from './crewState';
+import { bakeColours, bakedColour } from './geometryKit';
 import {
   BODY_LIFT,
   DRIVER_SEAT,
   jeepneyBody,
   jeepneyWheels,
-  JEEPNEY_AXLES,
+  JEEPNEY_WHEELS,
   WHEEL_RADIUS,
   rimPoint,
   SEATED_ROOT_Y,
@@ -48,7 +51,7 @@ import {
   steeringWheelGeometry,
   type PartSlot,
 } from './jeepneyGeometry';
-import { LIVERY_SLOTS, liveryColor, slotMaterial, wheelMaterial } from './materials';
+import { bakedMaterial, LIVERY_SLOTS, liveryColor, slotMaterial, wheelMaterial } from './materials';
 import { useScaledPose } from '../world/viewScale';
 
 export interface GroundPose {
@@ -60,6 +63,11 @@ export interface GroundPose {
 
 interface Props {
   count: number;
+  /**
+   * Slots to keep: as long as it stays the same, a new count only changes how
+   * many are drawn, and nothing has to be built again (default: `count`).
+   */
+  capacity?: number;
   liveries: readonly Livery[];
   /** Fill `out` with vehicle i's pose. Called every frame for each vehicle. */
   poseAt: (i: number, out: GroundPose) => void;
@@ -76,7 +84,34 @@ interface Props {
   hidden?: (i: number) => boolean;
   /** Drawn with nobody at the wheel (parked). */
   driverless?: (i: number) => boolean;
+  /** The layer to draw on, when not every camera should see them. */
+  layer?: number;
 }
+
+let cachedShell: BufferGeometry | null = null;
+let cachedWheels: BufferGeometry | null = null;
+
+/** Everything of the same colour on every jeepney, in one geometry. */
+function jeepneyShell(): BufferGeometry {
+  cachedShell ??= bakeColours(
+    (Object.entries(jeepneyBody()) as [PartSlot, BufferGeometry][])
+      .filter(([slot]) => !LIVERY_SLOTS.has(slot) && slot !== 'glass')
+      .map(([slot, g]) => [g, bakedColour(slotMaterial(slot))] as const),
+  );
+  return cachedShell;
+}
+
+function bakedWheels(): BufferGeometry {
+  const { tire, hub } = jeepneyWheels();
+  cachedWheels ??= bakeColours([
+    [tire, bakedColour(wheelMaterial('tire'))],
+    [hub, bakedColour(wheelMaterial('hub'))],
+  ]);
+  return cachedWheels;
+}
+
+/** The parts drawn apart from the shell: their colour varies, or they are see-through. */
+const OWN_MESH: readonly PartSlot[] = [...LIVERY_SLOTS, 'glass'];
 
 /** Collapses an instance to nothing: how a hidden jeepney is "drawn". */
 const NOWHERE = new Matrix4().makeScale(0, 0, 0);
@@ -104,6 +139,20 @@ const STEERING_RATIO = 14;
 const WHEELBASE_M = 4.3;
 /** Lock to lock is about ±1.5 turns; we stop well short of full lock. */
 const MAX_WHEEL_TURN = 2.4;
+/** The front wheels turn at most this far either way (radians): a jeepney's full lock, about 35 degrees. */
+const MAX_ROAD_WHEEL = (35 * Math.PI) / 180;
+/** Turns a left-hand wheel to face out, its hub to the left. */
+const LEFT_WHEEL = new Matrix4().makeRotationY(Math.PI);
+
+/**
+ * How far the front wheels turn (radians, + = right) for a vehicle turning at
+ * `yawRate` (rad/s) at `speed` (m/s): the bicycle model, atan(L·ω / v),
+ * no further than full lock.
+ */
+function roadWheelFor(yawRate: number, speed: number): number {
+  const angle = Math.atan((WHEELBASE_M * yawRate) / Math.max(speed, 1.5));
+  return Math.max(-MAX_ROAD_WHEEL, Math.min(MAX_ROAD_WHEEL, angle));
+}
 /** Hands at "ten to two"; they ride round with the wheel up to this far. */
 const GRIP_ANGLE = (62 * Math.PI) / 180;
 const HANDS_FOLLOW = 1.0;
@@ -140,6 +189,7 @@ export function drivingPose(
 
 export function JeepneyInstances({
   count,
+  capacity = count,
   liveries,
   poseAt,
   castShadow = true,
@@ -149,11 +199,11 @@ export function JeepneyInstances({
   onSelect,
   hidden,
   driverless,
+  layer,
 }: Props) {
   const viewer = useThree((s) => s.camera);
   const body = jeepneyBody();
-  const wheels = jeepneyWheels();
-  const slots = useMemo(() => Object.keys(body) as PartSlot[], [body]);
+  const slots = useMemo(() => OWN_MESH.filter((slot) => body[slot]), [body]);
 
   const bodyMeshes = useRef<Array<InstancedMesh | null>>([]);
   const wheelMeshes = useRef<Array<InstancedMesh | null>>([]);
@@ -162,7 +212,7 @@ export function JeepneyInstances({
   /** Each vehicle's matrix for picking; null while it is hidden. */
   const vehicleMatrices = useRef<Array<Matrix4 | null>>([]);
   const people = useRef<PeopleHandle>(null);
-  const crewCapacity = count * (SEATS + 1);
+  const crewCapacity = capacity * (PLACES.length + 1);
   const local = useMemo(() => new Matrix4(), []);
 
   useEffect(
@@ -212,6 +262,9 @@ export function JeepneyInstances({
       turnRates: new Float32Array(count),
       speeds: new Float32Array(count),
       wheelTurns: new Float32Array(count),
+      /** How far each one's front wheels are steered (radians, + = right). */
+      steers: new Float32Array(count),
+      steerM: new Matrix4(),
       /** How far each one's wheels have turned (radians). */
       spins: new Float32Array(count),
       wheelM: new Matrix4(),
@@ -241,6 +294,12 @@ export function JeepneyInstances({
 
   // Once per frame: where each jeepney is, and how fast it turns and moves
   // (smoothed over a few frames), which drives its steering wheel.
+  useLayoutEffect(() => {
+    for (const m of bodyMeshes.current) if (m) m.count = count;
+    for (const m of wheelMeshes.current) if (m) m.count = count * JEEPNEY_WHEELS.length;
+    if (steeringWheels.current) steeringWheels.current.count = count;
+  }, [count, capacity]);
+
   useFrame((state, dt) => {
     const { pose, prevHeading, prevX, prevZ, turnRates, speeds, wheelTurns, hasPrev, spins } =
       scratch;
@@ -266,6 +325,7 @@ export function JeepneyInstances({
         const moved = speed * dt;
         if (moved < 15) spins[i]! += moved / WHEEL_RADIUS;
         wheelTurns[i]! += (wheelTurnFor(turnRates[i]!, speeds[i]!) - wheelTurns[i]!) * ease;
+        scratch.steers[i]! += (roadWheelFor(turnRates[i]!, speeds[i]!) - scratch.steers[i]!) * ease;
       }
       hasPrev[i] = 1;
       prevHeading[i] = pose.heading;
@@ -288,17 +348,19 @@ export function JeepneyInstances({
         ? null
         : crew?.passengers.get(selected.trackedRiderId)?.vehicleId;
     obj.scale.setScalar(scaleWithView ? viewK : 1);
+    let anyShown = false;
     crowd?.begin();
     for (let i = 0; i < count; i++) {
       if (hidden?.(i)) {
         for (const m of bodyMeshes.current) m?.setMatrixAt(i, NOWHERE);
         for (const m of wheelMeshes.current)
-          for (let a = 0; a < JEEPNEY_AXLES.length; a++)
-            m?.setMatrixAt(i * JEEPNEY_AXLES.length + a, NOWHERE);
+          for (let w = 0; w < JEEPNEY_WHEELS.length; w++)
+            m?.setMatrixAt(i * JEEPNEY_WHEELS.length + w, NOWHERE);
         steering?.setMatrixAt(i, NOWHERE);
         vehicleMatrices.current[i] = null;
         continue;
       }
+      anyShown = true;
       const wheelTurn = wheelTurns[i]!;
       obj.position.set(poseX[i]!, 0, poseZ[i]!);
       obj.rotation.set(0, poseHeading[i]!, 0);
@@ -309,13 +371,19 @@ export function JeepneyInstances({
       }
       bodyM.multiplyMatrices(obj.matrix, lift);
       for (const m of bodyMeshes.current) m?.setMatrixAt(i, bodyM);
-      // Each axle's wheels, rolled forward (about the axle, nose-down: a negative angle).
+      // Each wheel at its place, the front two steered into the turn (about
+      // their own upright: right is a negative angle), all rolled forward
+      // (about the axle, nose-down: a negative angle), the left ones turned to face out.
       scratch.roll.makeRotationZ(-scratch.spins[i]!);
-      JEEPNEY_AXLES.forEach((x, a) => {
-        scratch.wheelM.makeTranslation(x, WHEEL_RADIUS, 0).multiply(scratch.roll);
+      scratch.steerM.makeRotationY(-scratch.steers[i]!);
+      JEEPNEY_WHEELS.forEach((w, n) => {
+        scratch.wheelM.makeTranslation(w.x, WHEEL_RADIUS, w.z);
+        if (w.steers) scratch.wheelM.multiply(scratch.steerM);
+        scratch.wheelM.multiply(scratch.roll);
+        if (w.side < 0) scratch.wheelM.multiply(LEFT_WHEEL);
         scratch.wheelM.premultiply(obj.matrix);
         for (const m of wheelMeshes.current)
-          m?.setMatrixAt(i * JEEPNEY_AXLES.length + a, scratch.wheelM);
+          m?.setMatrixAt(i * JEEPNEY_WHEELS.length + n, scratch.wheelM);
       });
       // The steering wheel turns about its own axis (the wheel frame's z);
       // steering right is clockwise as the driver sees it: a negative angle.
@@ -344,17 +412,25 @@ export function JeepneyInstances({
         rimPoint(-GRIP_ANGLE, handTurn, grip[1]).applyMatrix4(obj.matrix);
         crowd.emit(root, drivingPose(t, look.idle, wheelTurn, grip, person), seed, look);
       }
-      crew?.forEachRider(i, (riderId, motion) => {
+      crew?.forEachRider(i, (riderId, motion, place) => {
         const seed = riderSeed(riderId);
         const look = appearance(seed);
         root.multiplyMatrices(obj.matrix, rootFor(motion, look.size, local));
-        crowd.emit(root, poseFromMotion(motion, look, t, person), seed);
+        poseFromMotion(motion, look, t, person);
+        holdRails(person, motion.hold, place?.holds, obj.matrix);
+        crowd.emit(root, person, seed, undefined, 1, isPregnant(crew, riderId));
       });
     }
     crowd?.end();
-    for (const m of bodyMeshes.current) if (m) m.instanceMatrix.needsUpdate = true;
-    for (const m of wheelMeshes.current) if (m) m.instanceMatrix.needsUpdate = true;
-    if (steering) steering.instanceMatrix.needsUpdate = true;
+    for (const m of [...bodyMeshes.current, ...wheelMeshes.current, steering]) {
+      if (!m) continue;
+      // None to draw (a route of other kinds): not a draw call in every pass.
+      m.visible = anyShown;
+      // Only those drawn, not every slot kept.
+      m.instanceMatrix.clearUpdateRanges();
+      m.instanceMatrix.addUpdateRange(0, m.count * 16);
+      m.instanceMatrix.needsUpdate = true;
+    }
   });
 
   return (
@@ -386,36 +462,55 @@ export function JeepneyInstances({
       )}
       {slots.map((slot, si) => (
         <instancedMesh
-          key={`${slot}-${count}`}
+          key={`${slot}-${capacity}`}
           ref={(m) => {
             bodyMeshes.current[si] = m;
+            if (m && layer !== undefined) m.layers.set(layer);
           }}
-          args={[body[slot], slotMaterial(slot), count]}
+          args={[body[slot], slotMaterial(slot), capacity]}
           castShadow={castShadow && slot !== 'glass'}
           receiveShadow
           frustumCulled={false}
         />
       ))}
-      {(['tire', 'hub'] as const).map((part, wi) => (
-        <instancedMesh
-          key={`${part}-${count}`}
-          ref={(m) => {
-            wheelMeshes.current[wi] = m;
-          }}
-          args={[wheels[part], wheelMaterial(part), count * JEEPNEY_AXLES.length]}
-          castShadow={castShadow}
-          frustumCulled={false}
-        />
-      ))}
       <instancedMesh
-        key={`steering-${count}`}
-        ref={steeringWheels}
-        args={[steeringWheelGeometry(), slotMaterial('dark'), count]}
+        key={`shell-${capacity}`}
+        ref={(m) => {
+          bodyMeshes.current[slots.length] = m;
+          if (m && layer !== undefined) m.layers.set(layer);
+        }}
+        args={[jeepneyShell(), bakedMaterial(), capacity]}
+        castShadow={castShadow}
+        receiveShadow
+        frustumCulled={false}
+      />
+      <instancedMesh
+        key={`wheels-${capacity}`}
+        ref={(m) => {
+          wheelMeshes.current[0] = m;
+          if (m && layer !== undefined) m.layers.set(layer);
+        }}
+        args={[bakedWheels(), bakedMaterial(), capacity * JEEPNEY_WHEELS.length]}
+        castShadow={castShadow}
+        frustumCulled={false}
+      />
+      <instancedMesh
+        key={`steering-${capacity}`}
+        ref={(m) => {
+          steeringWheels.current = m;
+          if (m && layer !== undefined) m.layers.set(layer);
+        }}
+        args={[steeringWheelGeometry(), slotMaterial('dark'), capacity]}
         castShadow={castShadow}
         frustumCulled={false}
       />
       {(drivers || crew) && (
-        <PeopleInstances ref={people} capacity={crewCapacity} castShadow={castShadow} />
+        <PeopleInstances
+          ref={people}
+          capacity={crewCapacity}
+          castShadow={castShadow}
+          layer={layer}
+        />
       )}
     </group>
   );

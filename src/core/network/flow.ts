@@ -29,7 +29,7 @@
 import { passesNear } from '../geo/near';
 import type { Route } from '../geo/routes';
 import { aheadOf } from '../geo/routes';
-import { fleetKinds, seatsOf, type FleetKind } from '../vehicles/specs';
+import { fleetKinds, placesOf, seatsOf, type FleetKind } from '../vehicles/specs';
 import {
   expectedArrivals,
   HOME_FROM_S,
@@ -40,8 +40,6 @@ import {
   TERMINAL_KEPT_SHARE,
 } from '../fleet/scenario';
 
-/** Seats in a traditional jeepney (matches the twin's passenger layout scale). */
-export const FLOW_CAPACITY = 22;
 /** More would not change what anyone sees, and a focused route simulates them all. */
 export const MAX_FLOW_VEHICLES = 80;
 const MIN_FLOW_VEHICLES = 2;
@@ -58,13 +56,36 @@ const DISPATCH_MAX_S = 2 * 3600;
 /** At a terminal, the line: 2 to 5 minutes before the trip back (as the twin's). */
 const PILA_MIN_S = 120;
 const PILA_MAX_S = 300;
+/**
+ * The line moves up as the head of it leaves (metres a second): those who
+ * came first are further on, so the line stands along the road, not all on
+ * one spot, and carries on from where it got to.
+ */
+const PILA_CREEP_MPS = 0.1;
 
-/** Average jeepney speed including stops, km/h, by hour of day. */
+/**
+ * Average jeepney speed including stops, km/h, by hour of day: about two
+ * thirds of the moving pace the twin's vehicles make (trafficShare), as a
+ * stop every few hundred metres takes, so the other routes keep up with them.
+ */
 export function flowSpeedKmh(hour: number): number {
   const h = ((Math.floor(hour) % 24) + 24) % 24;
-  if (h >= 22 || h < 5) return 20; // night: empty roads
-  if ((h >= 6 && h < 9) || (h >= 16 && h < 20)) return 11; // rush hours
-  return 15;
+  if (h >= 22 || h < 5) return 32; // night: empty roads
+  if ((h >= 6 && h < 9) || (h >= 16 && h < 20)) return 17; // rush hours
+  return 22;
+}
+
+/**
+ * How much of their clear-road pace vehicles make in the hour's traffic:
+ * all of it at night (47–58 km/h), about two thirds through the day (32–39),
+ * half in the rush hours (23–29). The flows above are averages with their
+ * stops in; this is the moving pace of the vehicles the twin drives.
+ */
+export function trafficShare(hour: number): number {
+  const h = ((Math.floor(hour) % 24) + 24) % 24;
+  if (h >= 22 || h < 5) return 1;
+  if ((h >= 6 && h < 9) || (h >= 16 && h < 20)) return 0.5;
+  return 0.68;
 }
 
 /** Metres a jeepney has driven since midnight at the flow speeds, for clock t (seconds). */
@@ -198,15 +219,19 @@ export class RouteFlow {
   constructor(
     readonly route: Route,
     private readonly headwayS: number,
+    /** How many vehicles it has (core/network/fleetSize.ts); else what the headway needs. */
+    fleet?: number,
   ) {
     this.seed = idNumber(route.id);
     const L = route.polyline.length;
     const cycleS = L / (flowSpeedKmh(12) / 3.6);
-    this.count = Math.max(
-      MIN_FLOW_VEHICLES,
-      Math.min(MAX_FLOW_VEHICLES, Math.round(cycleS / Math.max(30, headwayS))),
-    );
-    this.kinds = fleetKinds(this.count, route.kind);
+    this.count =
+      fleet ??
+      Math.max(
+        MIN_FLOW_VEHICLES,
+        Math.min(MAX_FLOW_VEHICLES, Math.round(cycleS / Math.max(30, headwayS))),
+      );
+    this.kinds = fleetKinds(this.count, route.kind, route.mix);
     // Some boundary drivers' jeepneys are kept at a terminal (the
     // operator's); the rest, and owners', along the route away from the terminals.
     const terminals = route.stops.filter((s) => s.terminal).map((s) => s.s);
@@ -265,12 +290,12 @@ export class RouteFlow {
     v.index = i;
     v.plate = this.plates[i]!;
     v.kind = this.kinds[i]!;
-    v.capacity = seatsOf(v.kind);
+    v.capacity = placesOf(v.kind);
     v.inService = now !== null;
     const L = this.route.polyline.length;
     v.s = (((now?.s ?? this.homeS[i]!) % L) + L) % L;
     v.occupancy = v.inService
-      ? Math.max(0, Math.min(v.capacity, Math.round(v.capacity * load)))
+      ? Math.max(0, Math.min(v.capacity, Math.round(seatsOf(v.kind) * load)))
       : 0;
     v.speedMps = now?.moving ? flowSpeedKmh(hour) / 3.6 : 0;
     return v;
@@ -344,8 +369,8 @@ export class RouteFlow {
         // In the terminal's line before the trip back.
         const wait =
           PILA_MIN_S + hash(this.seed ^ day, i, 100 + leg.trip) * (PILA_MAX_S - PILA_MIN_S);
-        if (t < arrive + wait) return { s: at, moving: false };
-        leg = { day, s: at, at: arrive + wait, trip: leg.trip + 1 };
+        if (t < arrive + wait) return { s: at + (t - arrive) * PILA_CREEP_MPS, moving: false };
+        leg = { day, s: at + wait * PILA_CREEP_MPS, at: arrive + wait, trip: leg.trip + 1 };
       }
       return null;
     }

@@ -14,8 +14,8 @@ import {
   type NetworkFile,
   type NetworkRouteFile,
 } from './network';
-import { flowLoad, flowSpeedKmh, RouteFlow, FLOW_CAPACITY } from './flow';
-import { planTrips, TRANSFER_WALK_M, type ArrivalsAt } from './plan';
+import { flowLoad, flowSpeedKmh, RouteFlow } from './flow';
+import { keepCheapest, planTrips, TRANSFER_WALK_M, type ArrivalsAt, type TripOption } from './plan';
 import { landmarks, placesOf, searchPlaces, searchRoutes } from './search';
 
 const projection = createProjection({ lat: 14.6, lng: 121.0 });
@@ -103,7 +103,9 @@ describe('the network file', () => {
     const first = route.polyline.points[0]!;
     const last = route.polyline.points.at(-1)!;
     expect(Math.hypot(first.x - last.x, first.z - last.z)).toBeLessThan(0.5);
-    expect(route.polyline.length).toBeCloseTo(A.length, -1);
+    // A little shorter: its corners are curves now, not right angles.
+    expect(route.polyline.length).toBeLessThan(A.length);
+    expect(route.polyline.length).toBeGreaterThan(A.length * 0.97);
     expect(route.stops[0]!.terminal).toBe(true);
     expect(route.stops.filter((s) => s.terminal)).toHaveLength(2);
     // Stops before the far terminal head towards it; stops after head home.
@@ -111,7 +113,7 @@ describe('the network file', () => {
     expect(route.stops[1]!.towards).toBe(route.stops[far]!.name);
     expect(route.stops[far + 1]!.towards).toBe(route.stops[0]!.name);
     // Stop positions match the road: the first stop on the way back is at x = 3000.
-    expect(route.polyline.pointAt(route.stops[far]!.s).x).toBeCloseTo(3000, 0);
+    expect(route.polyline.pointAt(route.stops[far]!.s).x).toBeGreaterThan(2960);
     expect(route.stopsSource).toBe('gtfs');
   });
 
@@ -130,7 +132,8 @@ describe('the network file', () => {
     };
     const ended = networkRoute(bare, projection);
     const far = ended.stops.find((s, i) => i > 0 && s.terminal)!;
-    expect(ended.polyline.pointAt(far.s).x).toBeCloseTo(3000, -1);
+    // Where the road turns round, its curve starting a little before the end.
+    expect(ended.polyline.pointAt(far.s).x).toBeGreaterThan(2960);
     expect(far.name).toBe(shortStopName(A.to));
     expect(ended.stops.every((s, i) => i === 0 || s.s >= ended.stops[i - 1]!.s)).toBe(true);
   });
@@ -165,13 +168,13 @@ describe('jeepney flows', () => {
   const flow = new RouteFlow(route, 120);
 
   it('runs as many jeepneys as the headway needs, each on the loop', () => {
-    // 6 km loop at 15 km/h is 24 min; one every 2 min is 12 jeepneys.
-    expect(flow.count).toBe(12);
+    // 6 km loop at 22 km/h is about 16 min; one every 2 min is 8 jeepneys.
+    expect(flow.count).toBe(8);
     for (const v of flow.vehicles(8 * 3600)) {
       expect(v.s).toBeGreaterThanOrEqual(0);
       expect(v.s).toBeLessThan(route.polyline.length);
       expect(v.occupancy).toBeGreaterThanOrEqual(0);
-      expect(v.occupancy).toBeLessThanOrEqual(FLOW_CAPACITY);
+      expect(v.occupancy).toBeLessThanOrEqual(v.capacity);
     }
   });
 
@@ -262,6 +265,45 @@ describe('landmarks people name', () => {
     const expected = projection.toLocal({ lat: 14.619, lng: 121.052 });
     expect(cubao.at.x).toBeCloseTo(expected.x, 3);
     expect(cubao.at.z).toBeCloseTo(expected.z, 3);
+  });
+});
+
+describe('the cheapest trip', () => {
+  let line = 0;
+  const trip = (totalS: number, fare: number, route = line++) =>
+    ({
+      totalS,
+      fare,
+      legs: [{ route, routeName: `R${route}`, alsoBy: [] }],
+    }) as unknown as TripOption;
+
+  it('is kept in place of the slowest when the fastest three all cost more', () => {
+    const a = trip(600, 40);
+    const b = trip(700, 40);
+    const c = trip(800, 40);
+    const low = trip(1500, 14);
+    const best = [a, b, c];
+    keepCheapest(best, [a, b, c, trip(1200, 30), low]);
+    expect(best).toEqual([a, b, low]);
+  });
+
+  it('takes the fastest at that fare, and adds nothing when it is already there', () => {
+    const a = trip(600, 14);
+    const best = [a];
+    keepCheapest(best, [a, trip(900, 14)]);
+    expect(best).toEqual([a]);
+    const fast = trip(500, 40);
+    const low = trip(900, 14);
+    const list = [fast];
+    keepCheapest(list, [fast, low, trip(950, 14)]);
+    expect(list).toEqual([fast, low]);
+  });
+
+  it('is not the same jeepney getting off sooner', () => {
+    const line7 = trip(600, 40, 7);
+    const best = [line7];
+    keepCheapest(best, [line7, trip(500, 14, 7)]);
+    expect(best).toEqual([line7]);
   });
 });
 

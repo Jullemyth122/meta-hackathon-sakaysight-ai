@@ -164,7 +164,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function osrm(points) {
   const coords = points.map((p) => `${p.lng},${p.lat}`).join(';');
   const res = await fetch(`${OSRM}/${coords}?overview=full&geometries=geojson&steps=true`, {
-    headers: { 'User-Agent': 'CommuteAI hackathon route builder' },
+    headers: { 'User-Agent': 'SakaySightAI hackathon route builder' },
   });
   if (!res.ok) throw new Error(`OSRM ${res.status}`);
   const body = await res.json();
@@ -181,7 +181,7 @@ async function mapRoads(points) {
   for (const t of tiles.tilesAround(points, projection, 50, 14)) {
     const url = tileTemplate.replace('{z}', t.z).replace('{x}', t.x).replace('{y}', t.y);
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'CommuteAI hackathon route builder' },
+      headers: { 'User-Agent': 'SakaySightAI hackathon route builder' },
     });
     if (res.status === 204 || res.status === 404) continue;
     if (!res.ok) throw new Error(`Tile ${t.z}/${t.x}/${t.y}: HTTP ${res.status}`);

@@ -9,12 +9,15 @@
  * recording one) re-matches every trace against the new road.
  */
 
+import type { StationFit } from '@/core/map/streets';
 import { FleetSim, DEFAULT_FLEET, type FuelStopAt } from '@/core/fleet/fleetSim';
 import { forecourtAlong, PULL_IN_M, stationsFor } from '@/core/fuel/stations';
-import { fleetKinds } from '@/core/vehicles/specs';
+import { alignKinds, mixKinds } from '@/core/fleet/scenario';
+import { fleetKinds, type FleetKind } from '@/core/vehicles/specs';
 import { laneOffset } from '@/scene/world/lanes';
 import type { SimulationScenario } from '@/core/fleet/scenario';
 import { CrewState } from '@/scene/jeepney/crewState';
+import type { DoorCounting } from '@/scene/vehicles/doorCounting';
 import type { CameraFeed } from './doorwayRuntime';
 import type { Route } from '@/core/geo/routes';
 import { LiveVehicle } from '@/core/tracking/liveVehicle';
@@ -27,12 +30,14 @@ export const MAX_FRAME_DT_S = 0.1;
 export const MAX_DAYS = 31;
 /**
  * Fast-forwarding (see advance): at most this many simulation steps a frame,
- * each at most MAX_TICK_S long; at night, with every jeepney parked and
+ * each at most MAX_TICK_S long, and no longer than SIM_BUDGET_MS of a frame
+ * (a busy machine sees the clock slow down, not the view freeze); at night, with every jeepney parked and
  * nothing to watch, the clock may skip ahead (only when asked: skipNight)
  * at least NIGHT_RATE× in NIGHT_TICK_S steps.
  */
-const MAX_TICKS_PER_FRAME = 30;
-const MAX_TICK_S = 0.25;
+const MAX_TICKS_PER_FRAME = 10;
+const MAX_TICK_S = 0.5;
+const SIM_BUDGET_MS = 10;
 const NIGHT_RATE = 600;
 const NIGHT_TICK_S = 2;
 
@@ -43,6 +48,8 @@ export interface FleetStart {
   plate: string;
   /** False when it is not out at this hour: parked at its terminal. */
   inService?: boolean;
+  /** What it is, when it comes from a flow: it stays that. */
+  kind?: FleetKind;
 }
 
 export class TwinRuntime {
@@ -52,6 +59,8 @@ export class TwinRuntime {
   readonly crew: CrewState;
   /** Cabin camera of the jeepney being ridden along with (null when none). */
   readonly cabinFeed: CameraFeed = { pipeline: null, clockMs: 0 };
+  /** Door cameras of the modern jeepney, UV Express or bus being ridden along with. */
+  doorCounting: DoorCounting | null = null;
   readonly live = new Map<string, LiveVehicle>();
   private readonly history = new Map<string, GpsFix[]>();
   private accumulatedS = 0;
@@ -76,7 +85,12 @@ export class TwinRuntime {
             fuelStops: () => this.fuelStops(),
             // A jeepney route's jeepneys (a few of them modern); a bus or UV
             // Express route's buses or vans.
-            kinds: fleetKinds(scenario.vehicles, route.kind),
+            kinds: alignKinds(
+              scenario.mix
+                ? mixKinds(scenario.mix)
+                : fleetKinds(scenario.vehicles, route.kind, route.mix),
+              start ?? [],
+            ),
           }
         : DEFAULT_FLEET,
     );
@@ -97,6 +111,7 @@ export class TwinRuntime {
   step(dtS: number, nowMs: number): void {
     this.fleet.step(dtS);
     this.crew.update(dtS);
+    this.doorCounting?.step(dtS);
     for (const v of this.live.values()) v.update(dtS, nowMs);
   }
 
@@ -113,8 +128,12 @@ export class TwinRuntime {
       const route = this.route;
       this.stations = all.flatMap((st) => {
         if (st.roadM > PULL_IN_M) return [];
-        const way = forecourtAlong(route, st, st.side === 'right' ? 1 : -1, (s) =>
-          laneOffset(route, s),
+        const way = forecourtAlong(
+          route,
+          st,
+          st.side === 'right' ? 1 : -1,
+          (s) => laneOffset(route, s),
+          this.stationFits.get(st.id),
         );
         return way ? [{ s: st.s, name: st.name ?? st.brand, side: st.side, ...way }] : [];
       });
@@ -123,6 +142,13 @@ export class TwinRuntime {
   }
   private stations: readonly FuelStopAt[] = [];
   private stationsSeen = -1;
+  private stationFits: ReadonlyMap<string, StationFit> = new Map();
+
+  /** Where stations stand, by id, as fitted among the map's roads. */
+  setStationFits(fits: ReadonlyMap<string, StationFit>): void {
+    this.stationFits = fits;
+    this.stationsSeen = -1;
+  }
 
   /** Every day of the month simulated: the clock has stopped. */
   get finished(): boolean {
@@ -150,13 +176,15 @@ export class TwinRuntime {
       night ? NIGHT_TICK_S : MAX_TICK_S,
       Math.max(1 / 60, this.accumulatedS / MAX_TICKS_PER_FRAME),
     );
+    const startedAt = performance.now();
     for (let n = 0; this.accumulatedS >= tick - 1e-9; n++) {
-      if (n >= MAX_TICKS_PER_FRAME) {
+      if (n >= MAX_TICKS_PER_FRAME || performance.now() - startedAt > SIM_BUDGET_MS) {
         this.accumulatedS = 0;
         break;
       }
       this.fleet.step(tick);
       this.crew.update(tick);
+      this.doorCounting?.step(tick);
       this.accumulatedS = Math.max(0, this.accumulatedS - tick);
     }
     // Phone/GPS interpolation remains on real time, even during accelerated experiments.

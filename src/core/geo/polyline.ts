@@ -20,11 +20,16 @@ export interface Projected extends PointOnPolyline {
   offset: number;
 }
 
+/** Segments in a chunk, for `project` to skip those too far away to matter. */
+const CHUNK = 32;
+
 export class Polyline {
   readonly points: readonly LocalPoint[];
   /** cumulative[i] = distance from points[0] to points[i]. */
   readonly cumulative: Float64Array;
   readonly length: number;
+  /** Each chunk's bounding box: minX, maxX, minZ, maxZ (made on first use). */
+  private chunks: Float64Array | null = null;
 
   constructor(points: readonly LocalPoint[]) {
     if (points.length < 2) throw new Error('Polyline needs at least 2 points');
@@ -89,8 +94,26 @@ export class Polyline {
   project(p: LocalPoint, window?: readonly [number, number]): Projected {
     let best: Projected | null = null;
     const [sMin, sMax] = window ?? [0, this.length];
+    // The nearest point can be no further than the far corner of any chunk's
+    // box, so a chunk whose box is further off than that has nothing to offer.
+    const boxes = window ? null : this.chunkBoxes();
+    let reach = Infinity;
+    for (let c = 0; boxes && c < boxes.length; c += 4) {
+      const dx = Math.max(p.x - boxes[c]!, boxes[c + 1]! - p.x);
+      const dz = Math.max(p.z - boxes[c + 2]!, boxes[c + 3]! - p.z);
+      reach = Math.min(reach, Math.hypot(dx, dz));
+    }
 
     for (let i = 0; i < this.points.length - 1; i++) {
+      if (boxes && i % CHUNK === 0) {
+        const c = (i / CHUNK) * 4;
+        const dx = Math.max(boxes[c]! - p.x, 0, p.x - boxes[c + 1]!);
+        const dz = Math.max(boxes[c + 2]! - p.z, 0, p.z - boxes[c + 3]!);
+        if (Math.hypot(dx, dz) > reach) {
+          i += CHUNK - 1;
+          continue;
+        }
+      }
       const s0 = this.cumulative[i]!;
       const s1 = this.cumulative[i + 1]!;
       if (s1 < sMin || s0 > sMax) continue;
@@ -116,5 +139,24 @@ export class Polyline {
     }
     // Window excluded every segment: fall back to an unconstrained search.
     return best ?? this.project(p);
+  }
+
+  private chunkBoxes(): Float64Array {
+    if (this.chunks) return this.chunks;
+    const segments = this.points.length - 1;
+    const boxes = new Float64Array(Math.ceil(segments / CHUNK) * 4);
+    for (let c = 0; c * CHUNK < segments; c++) {
+      let [minX, maxX, minZ, maxZ] = [Infinity, -Infinity, Infinity, -Infinity];
+      const end = Math.min(segments, (c + 1) * CHUNK);
+      for (let i = c * CHUNK; i <= end; i++) {
+        const { x, z } = this.points[i]!;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+      boxes.set([minX, maxX, minZ, maxZ], c * 4);
+    }
+    return (this.chunks = boxes);
   }
 }

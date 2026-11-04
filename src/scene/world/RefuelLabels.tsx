@@ -8,6 +8,7 @@
  * label rides on the roof.
  */
 
+import { behindCamera, labelSight } from './Labels';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
 import { Vector3 } from 'three';
@@ -91,9 +92,11 @@ export function RefuelLabels({ twin, hidden = false }: { twin: TwinRuntime; hidd
       }
       fleetPose(twin.fleet, id, pose);
       v.set(pose.x, LABEL_Y * k, pose.z);
-      const far = v.distanceTo(camera.position) > MAX_DISTANCE_M;
+      const distance = v.distanceTo(camera.position);
+      const far = distance > Math.min(MAX_DISTANCE_M, labelSight(camera.position.y));
+      const behind = behindCamera(camera, v);
       v.project(camera);
-      const off = far || v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
+      const off = far || behind || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
       span.hidden = off;
       if (off) return;
       const px = (v.x * 0.5 + 0.5) * size.width;

@@ -1,4 +1,10 @@
-import type { FleetSim, FleetVehicle, PassengerService } from '../fleet/fleetSim';
+import {
+  BRAKE_MPS2,
+  JEEPNEY_LENGTH_M,
+  type FleetSim,
+  type FleetVehicle,
+  type PassengerService,
+} from '../fleet/fleetSim';
 import { aheadOf, isTerminal, stopsAhead, type Route } from '../geo/routes';
 import { discountedKind, FARE_BY_VEHICLE, fareFor, type RiderKind } from '../fare';
 import type { FleetKind } from '../vehicles/specs';
@@ -6,11 +12,48 @@ import { stopRoles, stopsAheadFor } from '../vehicles/stops';
 import { createRng } from '../math/random';
 import { newRiderPose, RiderMotion, type RiderPose, type Seat } from './riderMotion';
 import type { LocalPoint } from '../geo/projection';
-import { alongFrom, leavingSpot, pavementPoint, waitingSpot } from './stopLayout';
+import type { Polyline } from '../geo/polyline';
+import { alongFrom, leavingSpot, pavementPoint, roadsidePoint, waitingSpot } from './stopLayout';
 import type { ApproachMode } from '../advisory/model';
-import { STOP_NEAR_M, type Catchments, type Lane } from './streetGraph';
+import { crossingsOf, RoadIndex, type Crossing, type CrossingPass } from './crossing';
+import { viaZebra, zebrasOf, type Zebra } from './zebra';
+import { onwardLine } from './onward';
+import { STOP_NEAR_M, wayLine, type Catchments, type Lane } from './streetGraph';
+import type { StreetWay } from './streetWay';
+import { stopsByTheRoad, VEHICLES } from '../vehicles/specs';
 import { COMMUTE_BY_HOUR, LAST_RIDERS_S } from '../fleet/scenario';
 import { BASE_MIX, calibrate, drawKind, mixAt, schoolStop, type Mix } from './riderMix';
+
+/** Someone this close to a side street a vehicle drives is by it, to be picked up (metres). */
+const BY_THE_STREET_M = 12;
+
+/** Someone coming to cross the road is seen by drivers this long before the kerb (seconds). */
+const HAIL_S = 4;
+/** A vehicle stops this far short of the line where someone crosses (metres)… */
+const YIELD_GAP_M = 3;
+/** …and nobody steps out with a vehicle's end this close to the line (metres). */
+const LINE_CLEAR_M = 1.5;
+/** A driver sees someone this far ahead, waiting to cross or crossing (metres). */
+const CROSSING_LOOK_M = 120;
+/** Past a vehicle's side by this much (metres), someone crossing is out of its way. */
+const LANE_CLEAR_M = 1;
+/** A traditional jeepney's width (metres; jeepneyGeometry). */
+const JEEPNEY_WIDTH_M = 2.2;
+/**
+ * Drivers wait for someone at the kerb for CROSSING_ASK_S out of every
+ * CROSSING_CYCLE_S: two people waiting on vehicles held for each other would
+ * otherwise wait for ever. Nobody passes someone already on the road.
+ */
+const CROSSING_CYCLE_S = 40;
+const CROSSING_ASK_S = 30;
+/** A vehicle slower than this is standing (m/s)… */
+const STANDING_MPS = 0.3;
+/** …and with one on their line this long (seconds) someone goes along the kerb for a gap… */
+const GO_ROUND_AFTER_S = 5;
+/** …looking this often along it (metres)… */
+const GAP_STEP_M = 3;
+/** …this far at most either way (metres). */
+const GAP_LOOK_M = 45;
 
 /** New people fade in over this as they walk up to the stop. */
 const FADE_IN_S = 0.8;
@@ -169,12 +212,25 @@ type Point3 = readonly [number, number, number];
 
 /** Vehicle geometry adapter: journey logic has no fixed seat count or door orientation. */
 export interface PassengerLayout {
+  /** Every place to ride: the seats, then any places to stand or hang on (Seat.stands). */
   seats: readonly Seat[];
+  /** The order they are taken: every seat before anyone stands. */
   seatOrder: readonly number[];
+  /** Riding still in place `seat`, sitting or standing. */
   seated(seat: number, out: RiderPose): RiderPose;
   board(seat: number, start: Point3): RiderMotion;
   alight(seat: number): RiderMotion;
+  /** From standing place `from` to `seat`, which has come free. */
+  takeSeat(from: number, seat: number): RiderMotion;
   isInside(pose: RiderPose): boolean;
+}
+
+/** Where the commuter app's own rider goes from the stop they get off at. */
+export interface Onward {
+  way: StreetWay;
+  mode: ApproachMode;
+  /** Where they end up, when that is not where the way ends (it ends in the road). */
+  to: LocalPoint;
 }
 
 export interface Passenger {
@@ -186,6 +242,11 @@ export interface Passenger {
   vehicleId: number | null;
   lastVehicleId: number | null;
   seat: number | null;
+  /**
+   * The seat beside a pregnant rider's, kept empty so she has room: one place
+   * fewer on board while she rides. Null when none was free beside her.
+   */
+  room?: number | null;
   /** Where they stand while waiting at the stop (null once they board). */
   spot: LocalPoint | null;
   inside: boolean;
@@ -204,6 +265,8 @@ export interface Passenger {
   homeNode?: number;
   /** Changing at a terminal on the way home: the stop to ride on to from there. */
   thenTo?: number;
+  /** The vehicle whose driver passed them on to the next one: they do not get back on it. */
+  passedOn?: number;
   /**
    * Who they are: as they said (the commuter app's own rider), else drawn
    * when they set out, by the hour, day and stop (riderMix.ts); riderKindOf(id) if unset.
@@ -216,6 +279,23 @@ export interface Passenger {
   offStreets?: boolean;
   /** The commuter app's own rider: their way to the stop, as they go it (drawn on the map). */
   way?: readonly Point3[];
+  /**
+   * Waiting at the side of the road this far along the route, not at a stop,
+   * as people do: any vehicle going their way with a seat stops for them
+   * there. `originStop` is then the stop after that spot.
+   */
+  flagS?: number;
+  /**
+   * Waiting by a side street off the route, not by the route itself: only a
+   * vehicle driving that street (a way round, fleetSim.ts takeWay) sees them
+   * and takes them on. `flagS` is then where along the route that street is.
+   */
+  byStreet?: boolean;
+  /** The commuter app's own rider: where they go from the stop they get off at. */
+  onward?: Onward;
+  /** Where their way goes over the road, still to come (crossing.ts), and the way that is of. */
+  crossings?: Crossing[];
+  crossingsOf?: RiderMotion;
 }
 
 /**
@@ -271,12 +351,24 @@ interface Service {
   heldS: number;
   /** Seconds lined up at its terminal waiting to fill (FILL). */
   fillS: number;
+  /** Stopped by the road at this point of the route, short of `stop`, for whoever waits there. */
+  flagS?: number;
   /** When the next boarder may reach the step (the one before is in by then). */
   doorFreeAt: number;
   /** The head of the queue's boarding, worked out once while they wait their turn. */
-  next: { id: number; seat: number; motion: RiderMotion; inAfterS: number } | null;
+  next: {
+    id: number;
+    seat: number;
+    room: number | null;
+    /** Who moves over (pakiusog) to free the seat beside a pregnant rider, and to where. */
+    usog?: { id: number; to: number };
+    motion: RiderMotion;
+    inAfterS: number;
+  } | null;
   /** False when letting riders off in a queue short of the stop: nobody gets on there. */
   pickup: boolean;
+  /** Whoever was standing has taken any seats freed at this stop. */
+  sat: boolean;
   /** For the stop log: riders off and on, and the fares they paid (centavos). */
   off: number;
   on: number;
@@ -302,10 +394,14 @@ interface Trips {
   aboard: Map<number, number>;
   gettingOff: Map<number, Set<number>>;
   waiting: Map<number, Passenger[]>;
+  /** Those waiting by the road, not at a stop (Passenger.flagS). */
+  flagging: Passenger[];
   /** Jeepneys whose doorway is in use by someone getting off. */
   doorBusy: Set<number>;
   /** Jeepneys with someone on the step (getting off, or not yet in). */
   onStep: Set<number>;
+  /** People at the kerb or on the road, drivers giving way. */
+  crossing: Crossing[];
 }
 
 /**
@@ -323,10 +419,13 @@ export const riderDiscounted = (id: number): boolean => discountedKind(riderKind
 /** Who `r` is: as they said (the commuter app's own rider), else as drawn. */
 export const kindOf = (r: Passenger): RiderKind => r.kind ?? riderKindOf(r.id);
 
+/** A seat this close to another, facing the same way, is next to it (metres). */
+const NEXT_SEAT_M = 1;
+
 /** A rider's fare in centavos, from where they got on to where they get off. */
 /** What rider `r` pays for the ride, by the vehicle's own fare rule (fare.ts). */
 function fareCentavosFor(route: Route, r: Passenger, vehicle: FleetKind): number {
-  const a = route.stops[r.originStop]!.s;
+  const a = r.flagS ?? route.stops[r.originStop]!.s;
   const b = route.stops[r.destinationStop]!.s;
   const metres = route.loop ? aheadOf(route, a, b) : Math.abs(b - a);
   return Math.round(
@@ -366,6 +465,14 @@ const FILL: Record<FleetKind, { share: number; patienceS: number }> = {
   uv: { share: 1, patienceS: 900 },
 };
 
+const lengthOf = ({ kind }: FleetVehicle): number =>
+  kind === 'jeepney' ? JEEPNEY_LENGTH_M : VEHICLES[kind].lengthM;
+const widthOf = ({ kind }: FleetVehicle): number =>
+  kind === 'jeepney' ? JEEPNEY_WIDTH_M : VEHICLES[kind].widthM;
+
+/** Whether drivers give way to `c` just now (see CROSSING_CYCLE_S). */
+const asking = (c: Crossing): boolean => c.stepped || c.heldS % CROSSING_CYCLE_S < CROSSING_ASK_S;
+
 export class PassengerSystem implements PassengerService {
   readonly metrics = { boarded: 0, alighted: 0, completed: 0, waitSeconds: 0 };
   readonly passengers = new Map<number, Passenger>();
@@ -381,14 +488,22 @@ export class PassengerSystem implements PassengerService {
   private readonly scratch = newRiderPose();
   /** Stops each stop's riders can reach (by kind, stop and direction), for goesTo. */
   private readonly callsAt = new Map<string, Set<number>>();
+  /** Riders passed on to the vehicle behind, by the stop they switch at, till one takes them. */
+  private readonly handedOver = new Map<number, Set<number>>();
   private trips: Trips = {
     at: -1,
     aboard: new Map(),
     gettingOff: new Map(),
     waiting: new Map(),
+    flagging: [],
     doorBusy: new Set(),
     onStep: new Set(),
+    crossing: [],
   };
+  /** Where the route's road is, for those crossing it. */
+  readonly road: RoadIndex;
+  /** The pedestrian crossings at its stops, where people walk over it (zebra.ts). */
+  readonly zebras: readonly Zebra[];
   /** Riders whose trip is over and who have left the twin. */
   delivered = 0;
   /** The streets around the stops, once loaded from the map (null: the route's pavement). */
@@ -411,6 +526,8 @@ export class PassengerSystem implements PassengerService {
     private readonly poseAt: (vehicle: number, out: VehiclePose) => VehiclePose,
   ) {
     const route = fleet.route;
+    this.road = new RoadIndex(route);
+    this.zebras = zebrasOf(route, this.road);
     const n = route.stops.length;
     // A bus or UV Express route: most ride all the way (to Cubao, Quiapo, Makati).
     const longRoute = route.kind === 'bus' || route.kind === 'uv';
@@ -430,6 +547,7 @@ export class PassengerSystem implements PassengerService {
     fleet.vehicles.forEach((v) => {
       const layout = layouts[v.id]!;
       v.capacity = layout.seats.length;
+      v.seats = layout.seats.filter((s) => !s.stands).length;
       v.occupancy = Math.min(v.occupancy, v.capacity);
       // Riders already on board got on at the stop just behind the jeepney…
       const origin = route.loop
@@ -452,6 +570,7 @@ export class PassengerSystem implements PassengerService {
         r.seat = layout.seatOrder[k]!;
         layout.seated(r.seat, r.pose);
       }
+      this.makeRoom(v);
     });
     const waiting = [...fleet.waiting];
     fleet.waiting.fill(0);
@@ -528,7 +647,7 @@ export class PassengerSystem implements PassengerService {
         FROM_STREET_M,
       );
       if (!path) continue;
-      r.motion = firstMile(mode, path);
+      r.motion = this.onFoot(mode, path);
       r.way = path;
       r.t = 0;
       r.motion.poseAt(0, r.pose);
@@ -555,6 +674,13 @@ export class PassengerSystem implements PassengerService {
     for (const o of this.passengers.values())
       if (o.spot && o.originStop === stop && o.direction === direction) others.push(o.spot);
     return others;
+  }
+
+  /** A way on foot, over the road at its nearest crossing; a tricycle drives it as it goes. */
+  private onFoot(mode: ApproachMode, path: readonly Point3[]): RiderMotion {
+    return mode === 'tricycle'
+      ? RiderMotion.tricycle(path)
+      : RiderMotion.walking(viaZebra(path, this.road, this.zebras));
   }
 
   /** One new rider at `stop`, from home (or wherever) to a stop ahead. */
@@ -611,7 +737,7 @@ export class PassengerSystem implements PassengerService {
     r.approachMode = modeFor(r.id, 12, metres);
     const path = c.toStop(from, r.direction, target, laneFor(r.id, r.approachMode));
     if (!path) return false;
-    r.motion = firstMile(r.approachMode, path);
+    r.motion = this.onFoot(r.approachMode, path);
     r.motion.poseAt(0, r.pose);
     if (r.tour === undefined && this.fleet.timeOfDay < MORNING_UNTIL_S) {
       r.tour = 'out';
@@ -627,7 +753,7 @@ export class PassengerSystem implements PassengerService {
     const far = firstMileOf(r.id);
     if (far) {
       r.approachMode = far.mode;
-      r.motion = firstMile(far.mode, approachPath(route, stop, direction, target, far.metres));
+      r.motion = this.onFoot(far.mode, approachPath(route, stop, direction, target, far.metres));
     } else {
       // From up or down the road, so people do not all walk in from one side.
       const from = r.id % 2 === 0 ? -WALK_IN_M : WALK_IN_M;
@@ -663,7 +789,7 @@ export class PassengerSystem implements PassengerService {
     // A tricycle waits at the kerb; on foot, from the jeepney's step.
     return leaveMode === 'tricycle'
       ? RiderMotion.tricycle(path)
-      : RiderMotion.walking([[r.pose.x, 0, r.pose.z], ...path]);
+      : this.onFoot('walk', [[r.pose.x, 0, r.pose.z], ...path]);
   }
 
   /**
@@ -740,7 +866,22 @@ export class PassengerSystem implements PassengerService {
     destination: number,
     distanceM: number,
     mode: ApproachMode = 'walk',
-    opts: { kind?: RiderKind; from?: LocalPoint; keepStop?: boolean } = {},
+    opts: {
+      kind?: RiderKind;
+      from?: LocalPoint;
+      keepStop?: boolean;
+      way?: StreetWay;
+      /** Wait at the side of the road here, not at `stop`, the stop after it… */
+      flagS?: number;
+      /** …just there, by that part of the road. */
+      flagAt?: LocalPoint;
+      /** …by a side street off the route, there (Passenger.byStreet). */
+      byStreet?: boolean;
+      /** Where they go from the stop they get off at, and how. */
+      onward?: Onward;
+      /** Along the route's pavement, in sight of the road, not in by the side streets. */
+      alongRoad?: boolean;
+    } = {},
   ): number {
     const route = this.fleet.route;
     // From a spot: the stop it leads to; with `keepStop`, to `stop` as given
@@ -766,19 +907,36 @@ export class PassengerSystem implements PassengerService {
     r.approachMode = mode;
     if (opts.kind) r.kind = opts.kind;
     if (stopsAhead(route, stop, direction).includes(destination)) r.destinationStop = destination;
-    const target = waitingSpot(route, stop, direction, r.id, others);
+    const target =
+      opts.flagS === undefined
+        ? waitingSpot(route, stop, direction, r.id, others)
+        : (opts.flagAt ?? roadsidePoint(route, opts.flagS, direction));
     r.spot = target;
+    r.flagS = opts.flagS;
+    if (opts.byStreet) r.byStreet = true;
+    r.onward = opts.onward;
     if (remaining === 0) Object.assign(r.pose, target);
     else {
       // From the spot chosen; else from a place on the side streets about
       // that far away, when they are known.
       const lane = laneFor(r.id, mode);
-      const place = first ? null : this.streets?.placeAbout(stop, direction, remaining, 0.5);
+      const place =
+        first || opts.alongRoad ? null : this.streets?.placeAbout(stop, direction, remaining, 0.5);
+      // The way already worked out for this trip, on to their place at the stop.
+      const given: Point3[] | null = opts.way
+        ? wayLine(opts.way.points, opts.way.widths, mode, target)
+        : opts.flagS !== undefined && opts.from
+          ? [
+              [opts.from.x, 0, opts.from.z],
+              [target.x, 0, target.z],
+            ]
+          : null;
       const path =
+        given ??
         (first && this.pathFrom(r, first, target, lane)) ??
         (place && this.streets!.toStop(place.node, direction, target, lane)) ??
         approachPath(route, stop, direction, target, remaining);
-      r.motion = firstMile(mode, path);
+      r.motion = this.onFoot(mode, path);
       r.way = path;
       r.motion.poseAt(0, r.pose);
     }
@@ -880,6 +1038,69 @@ export class PassengerSystem implements PassengerService {
     return true;
   }
 
+  /**
+   * On board `vehicle` now: exactly these riders, each going to the stop given,
+   * and nobody else, the first of them `kind`. For staging a moment
+   * (app/demoScenes.ts), before it moves.
+   */
+  seatRiders(vehicle: number, destinations: readonly number[], kind?: RiderKind): number[] {
+    const v = this.fleet.vehicles[vehicle]!;
+    const layout = this.layouts[vehicle]!;
+    const route = this.fleet.route;
+    for (const r of this.passengers.values())
+      if (r.vehicleId === vehicle) this.passengers.delete(r.id);
+    const n = route.stops.length;
+    const origin = route.loop
+      ? (v.nextStop - 1 + n) % n
+      : Math.max(0, Math.min(n - 1, v.nextStop - v.direction));
+    const ids = destinations.slice(0, layout.seats.length).map((stop, k) => {
+      const r = this.create(origin, v.direction, 'seated', k === 0 ? kind : undefined);
+      r.destinationStop = stop;
+      r.vehicleId = r.lastVehicleId = vehicle;
+      r.inside = true;
+      r.seat = layout.seatOrder[k]!;
+      layout.seated(r.seat, r.pose);
+      return r.id;
+    });
+    this.makeRoom(v);
+    v.occupancy = ids.length;
+    this.trips.at = -1;
+    return ids;
+  }
+
+  /** Waiting at `stop` now: exactly these people (a kind each, or as they come), nobody else. */
+  setWaiting(stop: number, kinds: ReadonlyArray<RiderKind | undefined>): void {
+    for (const r of [...this.passengers.values()])
+      if (r.originStop === stop && r.flagS === undefined && r.vehicleId === null) this.cancel(r.id);
+    this.fleet.waiting[stop] = 0;
+    for (const kind of kinds) {
+      this.spawn(stop, true);
+      if (kind) [...this.passengers.values()].at(-1)!.kind = kind;
+    }
+  }
+
+  /**
+   * The driver passes their riders on to the vehicle behind: everyone on
+   * board gets off at the next stop and waits there, going on to where they
+   * were going. Returns how many, and at which stop.
+   */
+  passOn(vehicle: number): { riders: number; stop: number } {
+    const v = this.fleet.vehicles[vehicle]!;
+    let riders = 0;
+    for (const r of this.passengers.values()) {
+      if (r.vehicleId !== vehicle || r.phase !== 'seated' || r.destinationStop === v.nextStop)
+        continue;
+      r.thenTo = r.destinationStop;
+      r.passedOn = vehicle;
+      r.destinationStop = v.nextStop;
+      riders++;
+      const at = this.handedOver.get(v.nextStop) ?? new Set<number>();
+      this.handedOver.set(v.nextStop, at.add(r.id));
+    }
+    this.trips.at = -1;
+    return { riders, stop: v.nextStop };
+  }
+
   arrive(vehicle: FleetVehicle, stop: number, dropOffOnly = false): void {
     const terminal = stopRoles(this.fleet.route, vehicle.kind).terminal[stop]!;
     const exits = [...this.passengers.values()].filter(
@@ -905,6 +1126,7 @@ export class PassengerSystem implements PassengerService {
       doorFreeAt: 0,
       next: null,
       pickup: !dropOffOnly,
+      sat: false,
       off: 0,
       on: 0,
       fareCentavos: 0,
@@ -925,10 +1147,222 @@ export class PassengerSystem implements PassengerService {
       doorFreeAt: 0,
       next: null,
       pickup: true,
+      sat: false,
       off: 0,
       on: 0,
       fareCentavos: 0,
     });
+  }
+
+  flagAhead(v: FleetVehicle): number | null {
+    const { flagging, aboard } = this.tripsNow();
+    if (flagging.length === 0 || !stopsByTheRoad(v.kind) || (aboard.get(v.id) ?? 0) >= v.capacity)
+      return null;
+    const route = this.fleet.route;
+    const ahead = (s: number) => (route.loop ? aheadOf(route, v.s, s) : (s - v.s) * v.direction);
+    let nearest: number | null = null;
+    for (const r of flagging) {
+      if (r.byStreet) continue;
+      if (r.direction !== v.direction || !this.goesTo(v, r.originStop, r.destinationStop)) continue;
+      const d = ahead(r.flagS!);
+      // Past them already, it is further to them than to the stop after them.
+      if (d < 0 || d > ahead(route.stops[r.originStop]!.s)) continue;
+      if (nearest === null || d < ahead(nearest)) nearest = r.flagS!;
+    }
+    return nearest;
+  }
+
+  /**
+   * Whoever waits by the side street `v` is driving (`line`, `fromM` metres
+   * along it already) and goes its way: how far along it they are, and their
+   * `flagS` (pickUpFlag). Null if nobody, or no seat.
+   */
+  streetRiderAhead(
+    v: FleetVehicle,
+    line: Polyline,
+    fromM: number,
+  ): {
+    atM: number;
+    flagS: number;
+  } | null {
+    const { flagging, aboard } = this.tripsNow();
+    if (flagging.length === 0 || (aboard.get(v.id) ?? 0) >= v.capacity) return null;
+    let nearest: { atM: number; flagS: number } | null = null;
+    for (const r of flagging) {
+      if (!r.byStreet || !r.spot || r.direction !== v.direction) continue;
+      if (!this.goesTo(v, r.originStop, r.destinationStop)) continue;
+      const p = line.project(r.spot);
+      if (p.offset > BY_THE_STREET_M || p.s <= fromM) continue;
+      if (!nearest || p.s < nearest.atM) nearest = { atM: p.s, flagS: r.flagS! };
+    }
+    return nearest;
+  }
+
+  /** Everyone at the kerb or on the road just now, drivers giving way. */
+  get crossingsNow(): readonly Crossing[] {
+    return this.tripsNow().crossing.filter(asking);
+  }
+
+  crossingAhead(v: FleetVehicle): number {
+    const crossing = this.tripsNow().crossing;
+    if (crossing.length === 0) return Infinity;
+    const half = lengthOf(v) / 2;
+    const toStop = (v.speedMps * v.speedMps) / (2 * BRAKE_MPS2);
+    let least = Infinity;
+    for (const c of crossing) {
+      if (!asking(c)) continue;
+      for (const pass of c.passes) {
+        const [near, far] = this.stripAhead(v, pass);
+        // On it (getting out of the way), past it, or too far off to matter.
+        if (near < half || far < -half || near > CROSSING_LOOK_M) continue;
+        // Out on the road but past this one's lane, walking away: it goes on.
+        if (c.stepped && this.pastLane(v, c)) continue;
+        const room = near - half - YIELD_GAP_M;
+        // Too close to stop: it goes on, and they wait for it (mayCross).
+        if (!c.stepped && room < toStop && !c.giving.has(v.id)) continue;
+        c.giving.add(v.id);
+        least = Math.min(least, Math.max(0, room));
+      }
+    }
+    return least;
+  }
+
+  /** Whether whoever is crossing at `c` is clear of `v`'s lane and walking away from it. */
+  private pastLane(v: FleetVehicle, c: Crossing): boolean {
+    if (!c.at) return false;
+    const p = this.poseAt(v.id, this.vehiclePose);
+    // Across the vehicle's way: (sin, cos) of its heading; theirs: along the crossing.
+    const nx = Math.sin(p.heading);
+    const nz = Math.cos(p.heading);
+    const beside = (c.at.x - p.x) * nx + (c.at.z - p.z) * nz;
+    const going = Math.cos(c.heading) * nx - Math.sin(c.heading) * nz;
+    return Math.abs(beside) > widthOf(v) / 2 + LANE_CLEAR_M && beside * going > 0;
+  }
+
+  /** How far the line at `s` is ahead of `v`, the short way round; behind it, negative. */
+  private lineAhead(v: FleetVehicle, s: number): number {
+    const route = this.fleet.route;
+    if (!route.loop) return (s - v.s) * v.direction;
+    const L = route.polyline.length;
+    return ((((s - v.s + L / 2) % L) + L) % L) - L / 2;
+  }
+
+  /** How far ahead of `v` the near and far ends of `pass` are; behind it, negative. */
+  private stripAhead(v: FleetVehicle, pass: CrossingPass): [number, number] {
+    const a = this.lineAhead(v, pass.s);
+    const b = a + (this.fleet.route.loop ? pass.alongM : pass.alongM * v.direction);
+    return a < b ? [a, b] : [b, a];
+  }
+
+  /** Whether someone at the kerb can step out: nothing on the line, nothing too close to stop. */
+  private mayCross(c: Crossing): boolean {
+    if (c.flowBusy) return false;
+    for (const v of this.fleet.vehicles) {
+      if (v.duty === 'parked' || v.yard) continue;
+      const half = lengthOf(v) / 2;
+      const toStop = (v.speedMps * v.speedMps) / (2 * BRAKE_MPS2);
+      for (const pass of c.passes) {
+        const [near, far] = this.stripAhead(v, pass);
+        if (near <= half + LINE_CLEAR_M && far >= -half - LINE_CLEAR_M) return false;
+        if (near > 0 && near - half - YIELD_GAP_M < toStop && !c.giving.has(v.id)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Whether a vehicle stands on the line of `c`, not just passing over it. */
+  private standingOn(c: Crossing): boolean {
+    return this.fleet.vehicles.some((v) => {
+      if (v.duty === 'parked' || v.yard || v.speedMps >= STANDING_MPS) return false;
+      const half = lengthOf(v) / 2;
+      return c.passes.some((pass) => {
+        const [near, far] = this.stripAhead(v, pass);
+        return near <= half + LINE_CLEAR_M && far >= -half - LINE_CLEAR_M;
+      });
+    });
+  }
+
+  /**
+   * Rider `r` at the kerb, a vehicle standing on their line: along the kerb to
+   * the nearest gap between what is on the road there, over, and back to their
+   * way. False when there is no gap in reach: they wait.
+   */
+  private goRound(r: Passenger, c: Crossing): boolean {
+    const motion = r.motion!;
+    const off = motion.poseAt(c.t1, this.scratch);
+    const exit: Point3 = [off.x, 0, off.z];
+    const c0 = this.fleet.route.polyline.pointAt(c.passes[0]!.s);
+    const ux = Math.cos(c0.heading);
+    const uz = -Math.sin(c0.heading);
+    // Where along the road, from their line, each vehicle near it is taken up.
+    const taken: Array<[number, number]> = [];
+    for (const v of this.fleet.vehicles) {
+      if (v.duty === 'parked' || v.yard) continue;
+      const p = this.poseAt(v.id, this.vehiclePose);
+      const along = (p.x - c.x) * ux + (p.z - c.z) * uz;
+      const beside = (p.x - c.x) * uz - (p.z - c.z) * ux;
+      if (Math.abs(along) > GAP_LOOK_M * 2 || Math.abs(beside) > c.length) continue;
+      const half = lengthOf(v) / 2 + LINE_CLEAR_M + YIELD_GAP_M;
+      taken.push([along - half, along + half]);
+    }
+    const slant = Math.abs((exit[0] - r.pose.x) * ux + (exit[2] - r.pose.z) * uz);
+    for (let m = GAP_STEP_M; m <= GAP_LOOK_M; m += GAP_STEP_M)
+      for (const shift of [m, -m]) {
+        if (taken.some(([a, b]) => shift + slant / 2 > a && shift - slant / 2 < b)) continue;
+        const dx = ux * shift;
+        const dz = uz * shift;
+        const path: Point3[] = [
+          [r.pose.x, 0, r.pose.z],
+          [r.pose.x + dx, 0, r.pose.z + dz],
+          [exit[0] + dx, 0, exit[2] + dz],
+          exit,
+          ...motion.pointsAfter(c.t1),
+        ];
+        r.motion = firstMile(motion.riding ? 'tricycle' : 'walk', path);
+        r.t = 0;
+        this.trips.at = -1;
+        return true;
+      }
+    return false;
+  }
+
+  /** True while rider `r` stands at the kerb, this tick, for the road to clear. */
+  private holdForRoad(r: Passenger, dt: number): boolean {
+    // The next crossing on their way, looked for once per way (from where they are).
+    if (r.crossingsOf !== r.motion) {
+      r.crossingsOf = r.motion!;
+      r.crossings = crossingsOf(r.motion!, this.road, r.t, 1);
+    }
+    const c = r.crossings![0];
+    if (!c) return false;
+    if (r.t >= c.t1) {
+      // Over: the one after it, if any.
+      r.crossings = crossingsOf(r.motion!, this.road, c.t1, 1);
+      this.trips.at = -1;
+      return false;
+    }
+    if (r.t + HAIL_S < c.t0) return false;
+    if (!c.hailing) {
+      c.hailing = true;
+      this.trips.at = -1;
+    }
+    if (c.stepped || r.t + dt < c.t0) return false;
+    if (this.mayCross(c)) {
+      c.stepped = true;
+      this.trips.at = -1;
+      return false;
+    }
+    const before = Math.floor(c.heldS / GO_ROUND_AFTER_S);
+    c.heldS += dt;
+    r.pose.walk = 0;
+    if (Math.floor(c.heldS / GO_ROUND_AFTER_S) > before && this.standingOn(c) && this.goRound(r, c))
+      return false;
+    return true;
+  }
+
+  pickUpFlag(vehicle: FleetVehicle, stop: number, s: number): void {
+    this.pickUp(vehicle, stop);
+    this.services.get(vehicle.id)!.flagS = s;
   }
 
   /** A stop done: into the log if anyone got off or on, and the jeepney may go. */
@@ -998,9 +1432,11 @@ export class PassengerSystem implements PassengerService {
     }
     for (const r of this.passengers.values()) {
       if (!r.motion) continue;
+      if (r.vehicleId === null && this.holdForRoad(r, dt)) continue;
       r.t = Math.min(r.t + dt, r.motion.duration);
       r.motion.poseAt(r.t, r.pose);
-      if (r.vehicleId !== null) {
+      // (On board already, moving to a seat that has come free.)
+      if (r.vehicleId !== null && r.phase !== 'seated') {
         const inside = this.layouts[r.vehicleId]!.isInside(r.pose);
         if (inside !== r.inside) {
           if (inside) {
@@ -1016,8 +1452,10 @@ export class PassengerSystem implements PassengerService {
       if (r.phase === 'approaching') {
         this.transition(r, 'waiting');
         r.pose.sit = 0;
-      } else if (r.phase === 'boarding') this.transition(r, 'seated');
-      else if (r.phase === 'alighting') this.walkAway(r);
+      } else if (r.phase === 'boarding') {
+        this.transition(r, 'seated');
+        this.sitInRoom(r);
+      } else if (r.phase === 'alighting') this.walkAway(r);
       else if (r.phase === 'walking') this.transition(r, 'arrived');
       r.pose.walk = 0;
     }
@@ -1033,11 +1471,14 @@ export class PassengerSystem implements PassengerService {
       if (service) this.advanceService(v, service, dt);
       v.occupancy = 0;
     }
+    for (const v of this.fleet.vehicles) v.capacity = this.layouts[v.id]!.seats.length;
     for (const r of this.passengers.values()) {
-      if (r.vehicleId !== null && r.inside) {
-        const v = this.fleet.vehicles[r.vehicleId];
-        if (v) v.occupancy++;
-      }
+      if (r.vehicleId === null) continue;
+      const v = this.fleet.vehicles[r.vehicleId];
+      if (!v) continue;
+      if (r.inside) v.occupancy++;
+      // The seat kept beside a pregnant rider is nobody's.
+      if (typeof r.room === 'number') v.capacity--;
     }
   }
 
@@ -1083,6 +1524,11 @@ export class PassengerSystem implements PassengerService {
       if (!this.tripsNow().onStep.has(v.id)) this.finish(v, s);
       return;
     }
+    // Everyone is off: those standing take the seats they left.
+    if (!s.sat) {
+      s.sat = true;
+      this.sitDown(v);
+    }
     // On a line the jeepney turns round at a terminal; on a loop the road
     // brings it back, so it keeps its direction.
     if (s.terminal && !s.turned) {
@@ -1094,7 +1540,7 @@ export class PassengerSystem implements PassengerService {
     // came (first come, first served). Whoever is further away sets off
     // earlier, so nobody stands at the step waiting for the person before.
     if (s.boarders === null) {
-      s.boarders = this.boardersFor(v, s.stop)
+      s.boarders = this.boardersFor(v, s)
         .slice(0, this.seatsLeft(v))
         .map((r) => r.id);
     }
@@ -1106,19 +1552,21 @@ export class PassengerSystem implements PassengerService {
         continue;
       }
       if (!s.next || s.next.id !== r.id) {
-        const seat = this.freeSeat(v);
-        if (seat === undefined) {
+        const place = this.freeSeat(v, r);
+        if (place === undefined) {
           s.boarders.length = 0; // full
           break;
         }
-        const motion = this.layouts[v.id]!.board(seat, this.localStart(v, r));
-        s.next = { id: r.id, seat, motion, inAfterS: this.timeToGetIn(v, motion) };
+        const motion = this.layouts[v.id]!.board(place.seat, this.localStart(v, r));
+        s.next = { id: r.id, ...place, motion, inAfterS: this.timeToGetIn(v, motion) };
       }
       // Too early: they would only queue at the step behind the one before.
       if (this.clock + s.next.inAfterS < s.doorFreeAt) return;
       s.boarders.shift();
       r.vehicleId = r.lastVehicleId = v.id;
       r.seat = s.next.seat;
+      r.room = s.next.room;
+      if (s.next.usog) this.moveOver(v, s.next.usog, r);
       s.on++;
       this.transition(r, 'boarding');
       r.spot = null; // their place in the crowd is free again
@@ -1132,7 +1580,7 @@ export class PassengerSystem implements PassengerService {
     }
     // People are still waiting (another jeepney took some of this list):
     // take the next of them while there are seats.
-    if (this.seatsLeft(v) > 0 && this.boardersFor(v, s.stop).length > 0) {
+    if (this.seatsLeft(v) > 0 && this.boardersFor(v, s).length > 0) {
       s.boarders = null;
       return;
     }
@@ -1140,7 +1588,12 @@ export class PassengerSystem implements PassengerService {
     if (this.tripsNow().onStep.has(v.id)) return;
     // Everyone queued is on. Someone hurrying to the stop with a seat left
     // for them: hold a moment, then board them like anyone else.
-    if (s.heldS < MAX_HOLD_S && this.seatsLeft(v) > 0 && this.hurryingTo(s.stop, v.direction)) {
+    if (
+      s.flagS === undefined &&
+      s.heldS < MAX_HOLD_S &&
+      this.seatsLeft(v) > 0 &&
+      this.hurryingTo(s.stop, v.direction)
+    ) {
       s.heldS += dt;
       s.boarders = null; // pick them up as soon as they reach the stop
       return;
@@ -1152,8 +1605,8 @@ export class PassengerSystem implements PassengerService {
       s.terminal &&
       v.duty === 'service' &&
       s.fillS < fill.patienceS &&
-      (this.tripsNow().aboard.get(v.id) ?? 0) < Math.ceil(fill.share * v.capacity) &&
-      this.waitingAhead(v, s.stop) < this.seatsLeft(v) &&
+      (this.tripsNow().aboard.get(v.id) ?? 0) < Math.ceil(fill.share * v.seats) &&
+      this.waitingAhead(v, s.stop) < v.seats - (this.tripsNow().aboard.get(v.id) ?? 0) &&
       !this.queuedBehind(v)
     ) {
       s.fillS += dt;
@@ -1204,15 +1657,154 @@ export class PassengerSystem implements PassengerService {
     });
   }
 
-  /** Seats free on `v` as of this tick (each jeepney takes on at most one person a tick). */
+  /**
+   * Places free on `v` as of this tick, seats or standing (each jeepney takes
+   * on at most one person a tick).
+   */
   private seatsLeft(v: FleetVehicle): number {
     return v.capacity - (this.tripsNow().aboard.get(v.id) ?? 0);
   }
 
-  private freeSeat(v: FleetVehicle): number | undefined {
-    const taken = new Set<number | null>();
-    for (const r of this.passengers.values()) if (r.vehicleId === v.id) taken.add(r.seat);
-    return this.layouts[v.id]!.seatOrder.find((k) => !taken.has(k));
+  /** Each seat free on `v`: whoever is standing nearest it (or hanging on) sits down. */
+  private sitDown(v: FleetVehicle): void {
+    // A pregnant rider without room yet has the seat beside her first.
+    this.makeRoom(v);
+    const layout = this.layouts[v.id]!;
+    const taken = this.placesTaken(v);
+    const standing: Passenger[] = [];
+    for (const r of this.passengers.values()) {
+      if (r.vehicleId !== v.id || r.seat === null) continue;
+      if (r.phase === 'seated' && !r.motion && layout.seats[r.seat]!.stands) standing.push(r);
+    }
+    for (const seat of layout.seatOrder) {
+      if (standing.length === 0) return;
+      const place = layout.seats[seat]!;
+      if (place.stands || taken.has(seat)) continue;
+      const apart = (r: Passenger) => Math.abs(layout.seats[r.seat!]!.x - place.x);
+      const nearest = standing.reduce((a, b) => (apart(b) < apart(a) ? b : a));
+      standing.splice(standing.indexOf(nearest), 1);
+      nearest.motion = layout.takeSeat(nearest.seat!, seat);
+      nearest.seat = seat;
+      nearest.t = 0;
+    }
+  }
+
+  /**
+   * Where `rider` sits on `v`: the first place free, or for a pregnant rider
+   * the first seat with a free one beside it, kept for her (else any free).
+   */
+  private freeSeat(
+    v: FleetVehicle,
+    rider: Passenger,
+  ): { seat: number; room: number | null; usog?: { id: number; to: number } } | undefined {
+    const layout = this.layouts[v.id]!;
+    const taken = this.placesTaken(v);
+    const benchFree = layout.seatOrder.filter((k) => !taken.has(k) && !layout.seats[k]!.stands);
+    if (kindOf(rider) === 'pregnant') {
+      for (const seat of benchFree) {
+        const room = this.seatBeside(v, seat, taken);
+        if (room !== undefined) return { seat, room };
+      }
+      // No two free side by side: the one beside a free seat moves over to
+      // another free seat (pakiusog), and the seat they leave is her room.
+      for (const seat of benchFree) {
+        const to = benchFree.find((k) => k !== seat);
+        if (to === undefined) break;
+        for (const room of this.seatsBeside(v, seat)) {
+          const mover = this.riderIn(v, room);
+          if (mover && this.canMoveOver(mover)) return { seat, room, usog: { id: mover.id, to } };
+        }
+      }
+    }
+    const seat = layout.seatOrder.find((k) => !taken.has(k));
+    return seat === undefined ? undefined : { seat, room: null };
+  }
+
+  /** Sat still in their seat, and not one who needs room themselves: able to move over. */
+  private canMoveOver(r: Passenger): boolean {
+    return (
+      r.phase === 'seated' && !r.motion && typeof r.room !== 'number' && kindOf(r) !== 'pregnant'
+    );
+  }
+
+  private riderIn(v: FleetVehicle, seat: number): Passenger | undefined {
+    for (const r of this.passengers.values()) if (r.vehicleId === v.id && r.seat === seat) return r;
+    return undefined;
+  }
+
+  /** `usog.id` moves over to seat `usog.to`, leaving the seat beside `her` free for her. */
+  private moveOver(v: FleetVehicle, usog: { id: number; to: number }, her: Passenger): void {
+    const mover = this.passengers.get(usog.id);
+    const from = mover?.seat;
+    if (
+      !mover ||
+      typeof from !== 'number' ||
+      from !== her.room ||
+      !this.canMoveOver(mover) ||
+      this.riderIn(v, usog.to)
+    ) {
+      her.room = null; // they have gone, or moved already: no room after all
+      return;
+    }
+    mover.motion = this.layouts[v.id]!.takeSeat(from, usog.to);
+    mover.seat = usog.to;
+    mover.t = 0;
+  }
+
+  /** Places on `v` sat or stood in, and the seats kept beside pregnant riders. */
+  private placesTaken(v: FleetVehicle): Set<number> {
+    const taken = new Set<number>();
+    for (const r of this.passengers.values()) {
+      if (r.vehicleId !== v.id) continue;
+      if (r.seat !== null) taken.add(r.seat);
+      if (typeof r.room === 'number') taken.add(r.room);
+    }
+    return taken;
+  }
+
+  /** The free seat next to `seat` on the same bench (or in the same row), if any. */
+  private seatBeside(
+    v: FleetVehicle,
+    seat: number,
+    taken: ReadonlySet<number>,
+  ): number | undefined {
+    return this.seatsBeside(v, seat).find((k) => !taken.has(k));
+  }
+
+  /** The seats next to `seat` on the same bench (or in the same row), nearest first. */
+  private seatsBeside(v: FleetVehicle, seat: number): number[] {
+    const seats = this.layouts[v.id]!.seats;
+    const at = seats[seat]!;
+    const apart = (k: number) => Math.hypot(seats[k]!.x - at.x, seats[k]!.z - at.z);
+    return seats
+      .map((_, k) => k)
+      .filter((k) => k !== seat && !seats[k]!.stands && seats[k]!.yaw === at.yaw)
+      .filter((k) => apart(k) < NEXT_SEAT_M)
+      .sort((x, y) => apart(x) - apart(y));
+  }
+
+  /** Each pregnant rider seated on `v` without room: the seat beside her, if it is free now. */
+  private makeRoom(v: FleetVehicle): void {
+    const seats = this.layouts[v.id]!.seats;
+    for (const r of this.passengers.values()) {
+      if (r.vehicleId !== v.id || typeof r.room === 'number' || r.seat === null) continue;
+      if (r.phase !== 'seated' || r.motion || kindOf(r) !== 'pregnant' || seats[r.seat]!.stands)
+        continue;
+      const room = this.seatBeside(v, r.seat, this.placesTaken(v));
+      if (room === undefined) continue;
+      r.room = room;
+      this.sitInRoom(r);
+    }
+  }
+
+  /** Seated with room beside her: in the middle of her seat and the one kept. */
+  private sitInRoom(r: Passenger): void {
+    if (r.vehicleId === null || r.seat === null || typeof r.room !== 'number') return;
+    const layout = this.layouts[r.vehicleId]!;
+    layout.seated(r.seat, r.pose);
+    const beside = layout.seated(r.room, this.scratch);
+    r.pose.x = (r.pose.x + beside.x) / 2;
+    r.pose.z = (r.pose.z + beside.z) / 2;
   }
 
   /**
@@ -1236,16 +1828,22 @@ export class PassengerSystem implements PassengerService {
     return ahead.has(destination);
   }
 
-  /** Who can get on `v` at `stop`, in the order they came. */
-  private boardersFor(v: FleetVehicle, stop: number): Passenger[] {
-    if (!loadsAt(this.fleet.route, v, stop)) return [];
-    // The tick's list of people at the stop; phase read live, as one may
-    // have just got on another jeepney.
-    return (this.tripsNow().waiting.get(stop) ?? [])
+  /** Who can get on `v` where it has stopped, in the order they came. */
+  private boardersFor(v: FleetVehicle, { stop, flagS }: Service): Passenger[] {
+    if (flagS === undefined && !loadsAt(this.fleet.route, v, stop)) return [];
+    // The tick's list of people there; phase read live, as one may have just
+    // got on another jeepney.
+    const { flagging, waiting } = this.tripsNow();
+    const there =
+      flagS === undefined
+        ? (waiting.get(stop) ?? [])
+        : flagging.filter((r) => r.flagS === flagS && (r.originStop === stop || r.byStreet));
+    return there
       .filter(
         (r) =>
           r.phase === 'waiting' &&
           r.direction === v.direction &&
+          r.passedOn !== v.id &&
           this.goesTo(v, stop, r.destinationStop),
       )
       .sort((a, b) => {
@@ -1296,9 +1894,43 @@ export class PassengerSystem implements PassengerService {
     if (t.gettingOff.get(v.id)?.has(stop)) return true;
     if ((t.aboard.get(v.id) ?? 0) >= v.capacity) return false;
     if (!loadsAt(this.fleet.route, v, stop)) return false;
+    if (this.handedOverTo(v, stop)) return true;
     return (t.waiting.get(stop) ?? []).some(
       (r) => r.direction === v.direction && this.goesTo(v, stop, r.destinationStop),
     );
+  }
+
+  /** How many are still on their way to `stop`, going `v`'s way (there within `withinS`, if given). */
+  comingTo(v: FleetVehicle, stop: number, withinS = Infinity): number {
+    let n = 0;
+    for (const r of this.passengers.values())
+      if (
+        r.phase === 'approaching' &&
+        r.originStop === stop &&
+        r.direction === v.direction &&
+        (!r.motion || r.motion.duration - r.t <= withinS)
+      )
+        n++;
+    return n;
+  }
+
+  /**
+   * Whether riders passed on are switching to `v` at `stop`: its driver was told,
+   * so it stops for them, even while they are still getting down from the other.
+   */
+  private handedOverTo(v: FleetVehicle, stop: number): boolean {
+    const ids = this.handedOver.get(stop);
+    if (!ids) return false;
+    let coming = false;
+    for (const id of ids) {
+      const r = this.passengers.get(id);
+      // Taken on by the one behind (or gone): no longer anyone's to stop for.
+      if (!r || (r.vehicleId !== null && r.vehicleId !== r.passedOn)) ids.delete(id);
+      else if (r.passedOn !== v.id && this.goesTo(v, stop, r.thenTo ?? r.destinationStop))
+        coming = true;
+    }
+    if (ids.size === 0) this.handedOver.delete(stop);
+    return coming;
   }
 
   /**
@@ -1314,9 +1946,16 @@ export class PassengerSystem implements PassengerService {
     t.aboard.clear();
     for (const set of t.gettingOff.values()) set.clear();
     for (const list of t.waiting.values()) list.length = 0;
+    t.flagging.length = 0;
+    t.crossing.length = 0;
     t.doorBusy.clear();
     t.onStep.clear();
     for (const r of this.passengers.values()) {
+      const c = r.crossings?.[0];
+      if (c?.hailing && r.vehicleId === null) {
+        c.at = { x: r.pose.x, z: r.pose.z };
+        t.crossing.push(c);
+      }
       if (r.vehicleId !== null) {
         t.aboard.set(r.vehicleId, (t.aboard.get(r.vehicleId) ?? 0) + 1);
         if (r.phase === 'seated' || r.phase === 'boarding') {
@@ -1327,6 +1966,10 @@ export class PassengerSystem implements PassengerService {
         if (r.phase === 'alighting') t.doorBusy.add(r.vehicleId);
         if (r.phase === 'alighting' || (r.phase === 'boarding' && !r.inside))
           t.onStep.add(r.vehicleId);
+      } else if (r.flagS !== undefined && r.phase === 'waiting') {
+        t.flagging.push(r);
+      } else if (r.flagS !== undefined && r.phase === 'approaching') {
+        // Not at the roadside yet: nothing to stop for.
       } else if (
         r.phase === 'waiting' ||
         // Someone nearly at the stop is worth stopping for (they will be waited for).
@@ -1335,8 +1978,14 @@ export class PassengerSystem implements PassengerService {
         let list = t.waiting.get(r.originStop);
         if (!list) t.waiting.set(r.originStop, (list = []));
         list.push(r);
-      } else if (r.phase === 'walking' && r.t < CLEAR_DOOR_S && r.lastVehicleId !== null) {
-        // Just stepped off: still in the doorway.
+      } else if (
+        r.phase === 'walking' &&
+        r.t < CLEAR_DOOR_S &&
+        r.lastVehicleId !== null &&
+        !(c && !c.stepped && c.heldS > 0)
+      ) {
+        // Just stepped off: still in the doorway. Not someone stopped at the
+        // kerb to cross: they may be waiting for this very vehicle to go.
         t.doorBusy.add(r.lastVehicleId);
       }
     }
@@ -1359,8 +2008,9 @@ export class PassengerSystem implements PassengerService {
     r.seat = null;
     r.inside = false;
     const route = this.fleet.route;
-    // Changing jeepneys at a terminal on the way home: into its line for the next one.
-    if (r.thenTo !== undefined && isTerminal(route, s.stop)) {
+    // Changing jeepneys at a terminal on the way home, or passed on by their
+    // driver: into the line for the next one.
+    if (r.thenTo !== undefined && (r.passedOn !== undefined || isTerminal(route, s.stop))) {
       this.changeAt(r, s.stop);
       return;
     }
@@ -1372,8 +2022,9 @@ export class PassengerSystem implements PassengerService {
     const here = alongFrom(route, s.stop, r.direction, r.pose);
     const kerbside = pavementPoint(route, s.stop, r.direction, here, 0.6);
     const target = leavingSpot(route, s.stop, r.direction, r.id, here);
-    // On to home or work along the side streets, when they are known.
+    // On to where the trip is going, or to home or work along the side streets, when known.
     r.motion =
+      this.toOnward(r, s.stop) ??
       this.toStreets(r, s.stop, kerbside) ??
       RiderMotion.walking([
         [r.pose.x, 0, r.pose.z],
@@ -1382,6 +2033,17 @@ export class PassengerSystem implements PassengerService {
       ]);
     r.t = 0;
     this.transition(r, 'walking');
+  }
+
+  /** The commuter app's own rider, off at the kerb: on to where they said they were going. */
+  private toOnward(r: Passenger, stop: number): RiderMotion | null {
+    if (!r.onward) return null;
+    const { way, mode, to } = r.onward;
+    r.leaveMode = mode;
+    const line = onwardLine(this.fleet.route, this.fleet.route.stops[stop]!.s, way, to);
+    return mode === 'tricycle'
+      ? RiderMotion.tricycle(line)
+      : this.onFoot('walk', [[r.pose.x, 0, r.pose.z], ...line]);
   }
 
   /** Off at terminal `stop` to change jeepneys: a few steps to its waiting area, then in line. */
@@ -1413,8 +2075,14 @@ export class PassengerSystem implements PassengerService {
     r.history.push({ phase, at: this.clock });
   }
 
-  forEachRider(vehicle: number, visit: (id: number, pose: RiderPose) => void): void {
-    for (const r of this.passengers.values()) if (r.vehicleId === vehicle) visit(r.id, r.pose);
+  /** Everyone on `vehicle`, with the place they have (null when they have none yet). */
+  forEachRider(
+    vehicle: number,
+    visit: (id: number, pose: RiderPose, place: Seat | null) => void,
+  ): void {
+    const seats = this.layouts[vehicle]!.seats;
+    for (const r of this.passengers.values())
+      if (r.vehicleId === vehicle) visit(r.id, r.pose, r.seat === null ? null : seats[r.seat]!);
   }
 
   forEachOutside(visit: (rider: Passenger) => void): void {

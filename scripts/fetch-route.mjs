@@ -42,7 +42,7 @@ import { dirname } from 'node:path';
 
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
 const OSRM = 'https://router.project-osrm.org/route/v1/driving';
-const USER_AGENT = 'CommuteAI hackathon prototype (route fetch script)';
+const USER_AGENT = 'SakaySightAI hackathon prototype (route fetch script)';
 const STOP_RADIUS_M = 30;
 
 function args() {

@@ -56,6 +56,8 @@ export interface DetectorModel {
   jitter: number;
   /** Covered fraction of a box above which detection starts to fail. */
   occlusionOnset: number;
+  /** Looking straight down: nobody's body is in front of anyone's head, so no occlusion. */
+  overhead?: boolean;
 }
 
 export const ESP32_HEAD_DETECTOR: DetectorModel = {
@@ -65,6 +67,9 @@ export const ESP32_HEAD_DETECTOR: DetectorModel = {
   jitter: 0.06,
   occlusionOnset: 0.45,
 };
+
+/** The same detector over a doorway, looking straight down. */
+export const DOOR_HEAD_DETECTOR: DetectorModel = { ...ESP32_HEAD_DETECTOR, overhead: true };
 
 /**
  * What the camera knows about the cabin, from where it is mounted: the rear
@@ -86,7 +91,41 @@ export interface CabinView {
 const OUTSIDE_WIDTH_RATIO = 1.05;
 const INSIDE_WIDTH_RATIO = 1.35;
 
+/**
+ * What a door camera knows, from where it is mounted: the line under its lens
+ * that a rider crosses going through the door. The line lies in a vertical
+ * plane through the lens, so it falls on the same pixels at any height: a
+ * short rider, a tall one, someone halfway up the steps.
+ */
+export interface DoorLineView {
+  /** The door, for the picture. */
+  name: string;
+  /** Two points on the line, in frame pixels. */
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  /** Which side of a→b the cabin is on (the sign of the cross product). */
+  insideSign: 1 | -1;
+  /** This close to the line either way (pixels), a head is at the door: unsure. */
+  bandPx: number;
+}
+
+export type CameraView = CabinView | DoorLineView;
+
 export type Side = 'in' | 'out' | 'unsure';
+
+/** How far a point is from the door line, in pixels: positive on the cabin's side. */
+export function doorLineOffset(x: number, y: number, v: DoorLineView): number {
+  const dx = v.b.x - v.a.x;
+  const dy = v.b.y - v.a.y;
+  return (v.insideSign * (dx * (y - v.a.y) - dy * (x - v.a.x))) / Math.hypot(dx, dy);
+}
+
+/** Which side of its door a tracked head is on. */
+export function sideOf(box: Box, view: CameraView): Side {
+  if ('door' in view) return cabinSide(box, view);
+  const d = doorLineOffset(box.cx, box.cy, view);
+  return d > view.bandPx ? 'in' : d < -view.bandPx ? 'out' : 'unsure';
+}
 
 export function cabinSide(box: Box, cabin: CabinView): Side {
   const { door } = cabin;
@@ -109,8 +148,11 @@ export interface PipelineTelemetry {
   seenNow: number;
   seenSteady: number;
   counts: Readonly<DoorCounts>;
-  cabin: Readonly<CabinView>;
+  view: Readonly<CameraView>;
 }
+
+/** Doors that can share a counter: a vehicle has one or two. */
+const MAX_DOORS = 8;
 
 interface PendingFrame {
   readyAt: number;
@@ -118,12 +160,10 @@ interface PendingFrame {
 }
 
 export class CabinPipeline {
-  // Heads move a few pixels per frame; a tight jump limit stops neighbouring
-  // heads at the back (a few pixels apart) from swapping identities.
-  readonly tracker = new CentroidTracker({ maxJumpPx: 10, maxMissedFrames: 6, maxSizeRatio: 1.4 });
+  readonly tracker: CentroidTracker;
   readonly counter: PassengerCounter;
   readonly model: DetectorModel;
-  readonly cabin: CabinView;
+  readonly view: CameraView;
   private readonly rng: Rng;
 
   private nextCaptureAt = 0;
@@ -135,11 +175,32 @@ export class CabinPipeline {
   /** Completion times and latencies, for the rolling one-second stats. */
   private recent: Array<{ t: number; latency: number }> = [];
 
-  constructor(rng: Rng, startingCount: number, cabin: CabinView, model = ESP32_HEAD_DETECTOR) {
+  /** `start`: the riders on board, or a counter shared with the vehicle's other doors, each with its own `slot`. */
+  constructor(
+    rng: Rng,
+    start: number | PassengerCounter,
+    view: CameraView,
+    model = ESP32_HEAD_DETECTOR,
+    private readonly slot = 0,
+  ) {
     this.rng = rng;
-    this.cabin = cabin;
+    this.view = view;
     this.model = model;
-    this.counter = new PassengerCounter(startingCount);
+    this.counter = typeof start === 'number' ? new PassengerCounter(start) : start;
+    this.tracker = new CentroidTracker(
+      // Down the cabin, heads move a few pixels a frame, and a tight jump limit
+      // stops neighbouring heads at the back (a few pixels apart) from
+      // swapping identities. Under a door camera, heads pass close to the
+      // lens: few of them, and quick across the frame.
+      'door' in view
+        ? { maxJumpPx: 10, maxMissedFrames: 6, maxSizeRatio: 1.4 }
+        : { maxJumpPx: 48, maxMissedFrames: 6, maxSizeRatio: 2 },
+    );
+  }
+
+  /** A track's id for the counter: tracks of each door sharing it stay apart. */
+  private counted(track: number): number {
+    return track * MAX_DOORS + this.slot;
   }
 
   /**
@@ -188,7 +249,7 @@ export class CabinPipeline {
       seenNow: this.seenNow,
       seenSteady: this.counter.heads.value,
       counts: this.counter.counts,
-      cabin: this.cabin,
+      view: this.view,
     };
   }
 
@@ -200,7 +261,7 @@ export class CabinPipeline {
     const nearer: VisiblePerson[] = [];
     const boxes: Box[] = [];
     for (const p of byDepth) {
-      const hidden = coveredFraction(p, nearer);
+      const hidden = m.overhead ? 0 : coveredFraction(p, nearer);
       nearer.push(p);
       // Past the onset, the chance of a miss climbs to ~95% when fully hidden.
       const occlusion = Math.max(0, (hidden - m.occlusionOnset) / (1 - m.occlusionOnset));
@@ -218,13 +279,15 @@ export class CabinPipeline {
 
   private process(frame: PendingFrame): void {
     this.lastBoxes = frame.boxes;
-    for (const id of this.tracker.update(frame.boxes)) this.counter.forget(id);
+    for (const id of this.tracker.update(frame.boxes)) this.counter.forget(this.counted(id));
     // Fresh detections only. Counting briefly missed tracks too would count a
     // head twice when the tracker re-acquires it under a new ID; brief misses
     // are already absorbed by the steady count's percentile window.
-    const seen = this.tracker.visible().map((t) => ({ id: t.id, side: cabinSide(t, this.cabin) }));
+    const seen = this.tracker
+      .visible()
+      .map((t) => ({ id: this.counted(t.id), side: sideOf(t, this.view) }));
     this.seenNow = seen.filter((t) => t.side === 'in').length;
-    this.counter.frame(frame.readyAt, seen, this.seenNow);
+    this.counter.frame(frame.readyAt, seen, 'door' in this.view ? this.seenNow : null);
   }
 }
 

@@ -51,6 +51,8 @@ export interface BuiltVehicle {
   doors: Record<DoorState, VehicleParts>;
   /** Every passenger seat. */
   seats: Seat[];
+  /** Where riders stand, packed (Seat.stands): VehicleSpec.standing of them, in the aisle. */
+  standing: Seat[];
   driver: DriverPlace;
   /**
    * The wheels, an axle at a time (both ends): `parts` centred on the axle,
@@ -63,15 +65,49 @@ export interface Axle {
   x: number;
   y: number;
   parts: VehicleParts;
+  /** A front wheel, on its own: it steers about its upright, `z` across (+ right). */
+  steers?: boolean;
+  z?: number;
 }
 
-/** The wheels at each end of the axle at `x`, centred on it (see Axle). */
-function axle(x: number, r: number, halfW: number, dual: boolean, studs?: number): Axle {
+/**
+ * The wheels at each end of the axle at `x`, centred on it (see Axle); or,
+ * with `side`, the one wheel at that end (a front wheel, steered on its own).
+ */
+function axle(
+  x: number,
+  r: number,
+  halfW: number,
+  dual: boolean,
+  studs?: number,
+  side?: 1 | -1,
+): Axle {
   const W = new Parts();
-  wheels(W, 0, r, halfW, dual, studs);
+  wheels(W, 0, r, halfW, dual, studs, side ? [side] : undefined);
   const parts = W.merge();
   for (const g of Object.values(parts)) g!.translate(0, -r, 0);
-  return { x, y: r, parts };
+  if (!side) return { x, y: r, parts };
+  // Its upright: the middle of the tyre, across the vehicle.
+  const tyre = parts.tire!;
+  tyre.computeBoundingBox();
+  const z = (tyre.boundingBox!.min.z + tyre.boundingBox!.max.z) / 2;
+  return { x, y: r, parts, steers: true, z };
+}
+
+/** The front axle's two wheels, each steered on its own, and the rear axle's (both ends, `dual` or not). */
+function steeredAxles(
+  front: number,
+  rear: number,
+  r: number,
+  halfW: number,
+  dualRear: boolean,
+  studs?: number,
+): Axle[] {
+  return [
+    axle(front, r, halfW, false, studs, 1),
+    axle(front, r, halfW, false, studs, -1),
+    axle(rear, r, halfW, dualRear, studs),
+  ];
 }
 
 const cache = new Map<VehicleKind, BuiltVehicle>();
@@ -176,7 +212,13 @@ function doorsOf(
   return { open: open.merge(), closed: closed.merge() };
 }
 
-/** The bus: 12 m, two doors on the kerb side, 2+2 seats facing forward, engine at the back. */
+/** A 3+2 bus's aisle: its middle (metres across, towards the doors) and its width. */
+export const BUS_AISLE_Z = 0.28;
+const BUS_AISLE_M = 0.28;
+/** Its two grab rails, either side of the middle of the aisle (metres). */
+const BUS_RAIL_APART_M = 0.08;
+
+/** The bus: 12 m, two doors on the kerb side, 3+2 seats facing forward, engine at the back. */
 function bus(): BuiltVehicle {
   const S = VEHICLES.bus;
   const P = new Parts();
@@ -209,7 +251,7 @@ function bus(): BuiltVehicle {
       pillar: 'dark',
     });
   // Ten-stud wheels, dual at the back.
-  const axles = [axle(S.axles[0], r, hw, false, 10), axle(S.axles[1], r, hw, true, 10)];
+  const axles = steeredAxles(S.axles[0], S.axles[1], r, hw, true, 10);
 
   // Roof, the air-conditioning unit, the ceiling with its light strips.
   // A touch wider than the walls (a drip rail along each side), so they never share a face.
@@ -230,20 +272,40 @@ function bus(): BuiltVehicle {
   underbody(P, xr + 0.1, xf - 0.1, hw - well.wellM, floor, skirt);
   wheelHousings(P, hw, floor, well);
 
-  // Seats: rows of two either side of the aisle; none at the middle door's
-  // stairs (a standing area there), a bench of five across the back.
+  // Seats: rows of three on the far side of the aisle and two on the door
+  // side; none at the middle door's stairs (a standing area there), a bench
+  // of five across the back. 61 in all.
   const seats: Seat[] = [];
   const middle = S.doors[1]!;
   for (let k = 0; k < 12; k++) {
     const x = 3.7 - k * 0.75; // 0.75 m apart, legroom for the back bench too
-    seats.push(...forwardSeat(P, x, -hw + WALL + 0.02, -0.3, floor));
+    seats.push(...forwardSeat(P, x, -hw + WALL + 0.02, BUS_AISLE_Z - BUS_AISLE_M / 2, floor));
     const nearMiddleDoor = x - 0.62 < middle.x1 + 0.1 && x > middle.x0 - 0.1;
-    if (!nearMiddleDoor) seats.push(...forwardSeat(P, x, 0.3, hw - WALL - 0.02, floor));
+    if (!nearMiddleDoor)
+      seats.push(...forwardSeat(P, x, BUS_AISLE_Z + BUS_AISLE_M / 2, hw - WALL - 0.02, floor));
   }
   P.add('trim', box(xr + 0.1, -5.4, floor, floor + 0.2, -hw + WALL, hw - WALL)); // over the engine
   seats.push(...forwardSeat(P, -5.45, -hw + WALL + 0.02, hw - WALL - 0.02, floor + 0.2, false));
+  // Standing in the aisle: one file, a step apart, each holding the strap
+  // that hangs from a rail above, the two rails taken in turn.
+  const standing = Array.from({ length: S.standing }, (_, k): Seat => {
+    const side = k % 2 ? -1 : 1;
+    const x = -4.8 + k * 0.45;
+    const rail = BUS_AISLE_Z + side * BUS_RAIL_APART_M;
+    const hand = [x + 0.05, floor + 1.58, rail] as const;
+    P.add('dark', box(x + 0.04, x + 0.06, floor + 1.6, floor + 1.8, rail - 0.01, rail + 0.01));
+    P.add('chrome', box(x, x + 0.1, floor + 1.57, floor + 1.6, rail - 0.012, rail + 0.012));
+    return {
+      x,
+      y: floor,
+      z: BUS_AISLE_Z,
+      yaw: 0,
+      stands: true,
+      holds: side > 0 ? [hand, null] : [null, hand],
+    };
+  });
   // Grab rails along the aisle; poles in the standing area, clear of the way to the door.
-  for (const z of [-0.33, 0.33])
+  for (const z of [BUS_AISLE_Z - BUS_RAIL_APART_M, BUS_AISLE_Z + BUS_RAIL_APART_M])
     P.add('chrome', cylinder(0.016, 0.016, 9.2, 8, 'x', -0.5, floor + 1.8, z));
   for (const x of [middle.x0 + 0.15, middle.x1 - 0.15])
     P.add('chrome', cylinder(0.018, 0.018, S.headroomM, 8, 'y', x, floor + S.headroomM / 2, 0.33));
@@ -308,7 +370,14 @@ function bus(): BuiltVehicle {
   band(P, 'stripe', belt - 0.28, belt - 0.12, xr, xf, hw, S.doors);
   band(P, 'stripe2', 1.2, 1.27, xr, xf, hw, S.doors);
   mounts(P, 'bus');
-  return { parts: P.merge(), doors: doorsOf(S.doors, hw, belt, top), seats, driver, axles };
+  return {
+    parts: P.merge(),
+    doors: doorsOf(S.doors, hw, belt, top),
+    seats,
+    standing,
+    driver,
+    axles,
+  };
 }
 
 /** The modern jeepney: a 6.9 m minibus, driver over the front axle, door behind the front wheel. */
@@ -345,7 +414,7 @@ function modernJeepney(): BuiltVehicle {
       windowX1: xf - 0.2,
       pillar: 'dark',
     });
-  const axles = [axle(S.axles[0], r, hw, false), axle(S.axles[1], r, hw, true)];
+  const axles = steeredAxles(S.axles[0], S.axles[1], r, hw, true);
 
   // Roof, air-con unit, ceiling with light strips.
   P.add('paint', rbox(xr, xf, roof - 0.03, roof + 0.06, -hw - 0.012, hw + 0.012, 0.05));
@@ -369,10 +438,26 @@ function modernJeepney(): BuiltVehicle {
     ...sideSeats(P, xr + 0.15, 1.95, -1, hw, floor, 0.42),
     ...sideSeats(P, xr + 0.15, entry.x0 - 0.05, 1, hw, floor, 0.42),
   ];
+  // Standing, packed: down the aisle behind the door, staggered, each facing
+  // the bench on their side with a hand on the rail over it (every other
+  // pair, both hands).
+  const standing = Array.from({ length: S.standing }, (_, k): Seat => {
+    const side = k % 2 ? -1 : 1;
+    const x = -3 + k * 0.4;
+    const rail = (dx: number) => [x + dx, floor + 1.56, side * 0.45] as const;
+    return {
+      x,
+      y: floor,
+      z: side * 0.26,
+      yaw: side > 0 ? -Math.PI / 2 : Math.PI / 2,
+      stands: true,
+      holds: [rail(-side * 0.14), k % 4 < 2 ? rail(side * 0.14) : null],
+    };
+  });
   const driver = driverSeat(P, 3.0, -hw + WALL + 0.1, -0.35, floor + 0.12, 0.2);
   P.add('dark', rbox(3.12, xf - 0.06, floor + 0.55, floor + 0.98, -hw + WALL, hw - WALL, 0.04));
   for (const z of [-0.45, 0.45])
-    P.add('chrome', cylinder(0.016, 0.016, 5.0, 8, 'x', xr + 0.3 + 2.5, floor + 1.62, z));
+    P.add('chrome', cylinder(0.016, 0.016, 5.0, 8, 'x', xr + 0.3 + 2.5, floor + 1.56, z));
   // Fare card reader on a pole by the door.
   P.add('chrome', cylinder(0.02, 0.02, 1.0, 8, 'y', entry.x0 - 0.1, floor + 0.5, hw - 0.55));
   P.add(
@@ -444,7 +529,14 @@ function modernJeepney(): BuiltVehicle {
   band(P, 'stripe', belt - 0.3, belt - 0.12, xr, xf, hw, S.doors);
   band(P, 'stripe2', belt - 0.36, belt - 0.32, xr, xf, hw, S.doors);
   mounts(P, 'modern');
-  return { parts: P.merge(), doors: doorsOf(S.doors, hw, belt, top), seats, driver, axles };
+  return {
+    parts: P.merge(),
+    doors: doorsOf(S.doors, hw, belt, top),
+    seats,
+    standing,
+    driver,
+    axles,
+  };
 }
 
 /** The UV Express: a high-roof 15-seater van, sliding door on the kerb side, short bonnet. */
@@ -486,7 +578,7 @@ function uvExpress(): BuiltVehicle {
       windowX1: cab - 0.05,
     });
   runningBoard(P, cabDoor, hw);
-  const axles = [axle(S.axles[0], r, hw, false), axle(S.axles[1], r, hw, false)];
+  const axles = steeredAxles(S.axles[0], S.axles[1], r, hw, false);
 
   // The driver's cab door: its windows, door line and handle, mirror (the
   // kerb side's cab door is a door of its own); the bonnet and nose.
@@ -580,6 +672,7 @@ function uvExpress(): BuiltVehicle {
     parts: P.merge(),
     doors: doorsOf(S.doors, hw, belt, top, livery),
     seats,
+    standing: [],
     driver,
     axles,
   };

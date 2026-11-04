@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { BufferGeometry, LineBasicMaterial, LineSegments, Matrix4, Vector3 } from 'three';
 import { useRuntimes } from '@/app/runtimeContext';
 import { useApp } from '@/app/store';
-import type { VehicleKind } from '@/core/vehicles/specs';
+import { VEHICLES, type VehicleKind } from '@/core/vehicles/specs';
 import type { VisiblePerson } from '@/core/doorway/pipeline';
 import { newRiderPose } from '@/core/people/riderMotion';
 import { CABIN_CAM, createCabinCamera, projectPerson } from './doorway/cabinCamera';
@@ -28,6 +28,7 @@ import { PeopleInstances, type PeopleHandle } from './people/PeopleInstances';
 import {
   appearance,
   HEAD_CENTRE_Y,
+  holdRails,
   poseFromMotion,
   rootFor,
   STANDING,
@@ -46,12 +47,41 @@ export function DoorwayScene() {
   return vehicle === 'jeepney' ? <JeepneyLab /> : <VehicleLab kind={vehicle} door={door} />;
 }
 
-/** The modern jeepney, UV Express or bus at the kerb; the picture-in-picture is its door camera. */
+/**
+ * The modern jeepney, UV Express or bus at the kerb, riders getting on and
+ * off; the picture-in-picture is the chosen door's camera, and every door's
+ * pipeline counts them (only from what the cameras see).
+ */
 function VehicleLab({ kind, door }: { kind: VehicleKind; door: number }) {
+  const { doorway } = useRuntimes();
+  const lab = doorway.vehicleLab(kind);
+  const people = useRef<PeopleHandle>(null);
+  const scratch = useMemo(
+    () => ({ person: { ...STANDING } as PersonPose, root: new Matrix4(), still: new Matrix4() }),
+    [],
+  );
   const camera = useMemo(() => {
     const cams = doorCameras(kind);
     return createDoorCamera(cams[Math.min(door, cams.length - 1)]!);
   }, [kind, door]);
+
+  useFrame((state, dtRaw) => {
+    lab.door = door;
+    lab.step(Math.min(dtRaw, 0.1));
+    const crowd = people.current;
+    if (!crowd) return;
+    const { person, root, still } = scratch;
+    crowd.begin();
+    lab.sim.forEachRider((id, motion, place, size) => {
+      const seed = RIDER_SEED + id;
+      rootFor(motion, size, root);
+      poseFromMotion(motion, appearance(seed), state.clock.elapsedTime, person);
+      holdRails(person, motion.hold, place.holds, still);
+      crowd.emit(root, person, seed);
+    });
+    crowd.end();
+  });
+
   return (
     <>
       <LabStage
@@ -59,6 +89,7 @@ function VehicleLab({ kind, door }: { kind: VehicleKind; door: number }) {
         maxDistance={kind === 'bus' ? 30 : 22}
       />
       <VehicleShowcase kind={kind} />
+      <PeopleInstances ref={people} capacity={VEHICLES[kind].seats + VEHICLES[kind].standing + 8} />
       <PipRenderer espCamera={camera} />
     </>
   );

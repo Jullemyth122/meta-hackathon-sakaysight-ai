@@ -5,6 +5,7 @@
  */
 
 import { Component, type ReactNode } from 'react';
+import { useApp } from '@/app/store';
 
 interface State {
   error: Error | null;
@@ -15,6 +16,11 @@ export class ViewportError extends Component<{ children: ReactNode }, State> {
 
   static getDerivedStateFromError(error: Error): State {
     return { error };
+  }
+
+  // Nothing will ever finish loading: no reason to keep this message behind the loading screen.
+  override componentDidCatch() {
+    useApp.getState().setStarted();
   }
 
   override render() {

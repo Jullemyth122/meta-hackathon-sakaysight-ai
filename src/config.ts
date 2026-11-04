@@ -18,11 +18,11 @@ export interface FirebaseWebConfig {
 
 function firebaseConfig(): FirebaseWebConfig | null {
   const cfg = {
-    apiKey: env.VITE_FIREBASE_API_KEY ?? '',
-    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN ?? '',
-    databaseURL: env.VITE_FIREBASE_DATABASE_URL ?? '',
-    projectId: env.VITE_FIREBASE_PROJECT_ID ?? '',
-    appId: env.VITE_FIREBASE_APP_ID ?? '',
+    apiKey: env.VITE_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
+    databaseURL: env.VITE_FIREBASE_DATABASE_URL || env.FIREBASE_DATABASE_URL || '',
+    projectId: env.VITE_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID || '',
+    appId: env.VITE_FIREBASE_APP_ID || env.FIREBASE_APP_ID || '',
   };
   // All or nothing: a half-configured Firebase fails in confusing ways.
   return Object.values(cfg).every(Boolean) ? cfg : null;

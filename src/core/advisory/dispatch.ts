@@ -66,7 +66,8 @@ export function dispatch(state: TwinState): Dispatch {
   // Queues per stop, earliest arrival first.
   const queues = new Map<number, PassengerState[]>();
   for (const p of passengers) {
-    if (p.phase !== 'waiting') continue;
+    // Someone by the road is picked up on sight, by whatever comes with a seat.
+    if (p.phase !== 'waiting' || p.flagS !== undefined) continue;
     (queues.get(p.originStop) ?? queues.set(p.originStop, []).get(p.originStop)!).push(p);
   }
   for (const q of queues.values()) q.sort((a, b) => a.queuedAt - b.queuedAt || a.id - b.id);
@@ -145,16 +146,34 @@ export function dispatch(state: TwinState): Dispatch {
       const d = Math.max(0, distanceTo(route, v, route.stops[stop]!.s));
       let first = d;
       let made = 0;
+      const between: Array<{ i: number; x: number }> = [];
       route.stops.forEach((st, i) => {
         const x = distanceTo(route, v, st.s);
         if (i === v.atStop || i === stop || x <= 0 || x >= d) return;
         first = Math.min(first, x);
+        between.push({ i, x });
         const stops =
           isTerminal(route, i) ||
           claimedAt(vehicle, i) > 0 ||
           drops[vehicle]!.some((y) => y.stop === i);
         if (stops) made++;
       });
+      // Road the fleet has just driven goes by how long it really took, queues
+      // and stops and all; only road nobody has driven lately goes by pace.
+      if (state.stopToStopS) {
+        between.push({ i: stop, x: d });
+        between.sort((a, b) => a.x - b.x);
+        let seconds = travelSeconds(first, v.speedMps);
+        let taken = between.length > 0 ? 1 : 0;
+        for (let k = 1; k < between.length; k++, taken++) {
+          const seen = state.stopToStopS[between[k]!.i] ?? 0;
+          seconds +=
+            seen > 0
+              ? seen
+              : travelSeconds(between[k]!.x - between[k - 1]!.x, v.paceMps) + ADVISORY.dwellS;
+        }
+        if (taken > 0) return seconds;
+      }
       // To the next stop at its speed now; on from there at its pace in this
       // hour's traffic (not a clear road's: a rush hour takes twice as long).
       return (

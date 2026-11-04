@@ -4,18 +4,20 @@ import { FARE_BY_VEHICLE, fareFor } from '@/core/fare';
 import { FIELD_SCENARIO } from '@/core/fleet/scenario';
 import { defaultRoute, isTerminal } from '@/core/geo/routes';
 import { newRiderPose } from '@/core/people/riderMotion';
-import { fleetKinds, VEHICLES, type FleetKind } from '@/core/vehicles/specs';
+import { fleetKinds, placesOf, type FleetKind } from '@/core/vehicles/specs';
 import { puvLayout } from './puvCrew';
 
 describe('modern jeepneys, UV Express and buses in the live twin', () => {
   it('a few of each in the fleet', () => {
     const kinds = fleetKinds(60);
     const count = (k: FleetKind) => kinds.filter((x) => x === k).length;
-    expect(count('modern')).toBe(5);
-    expect(count('bus')).toBe(3);
-    expect(count('uv')).toBe(3);
-    expect(count('jeepney')).toBe(49);
+    // Shares of 12%, 8% and 8%, give or take one in sixty.
+    expect(Math.abs(count('modern') - 7)).toBeLessThanOrEqual(1);
+    expect(Math.abs(count('bus') - 5)).toBeLessThanOrEqual(1);
+    expect(Math.abs(count('uv') - 5)).toBeLessThanOrEqual(1);
+    expect(count('jeepney')).toBeGreaterThan(40);
     expect(fleetKinds(8).every((k) => k === 'jeepney')).toBe(true);
+    expect(fleetKinds(20, 'bus').every((k) => k === 'bus')).toBe(true);
   });
 
   it('fares by the vehicle (LTFRB, 28 Sept 2026)', () => {
@@ -43,28 +45,40 @@ describe('modern jeepneys, UV Express and buses in the live twin', () => {
         for (const r of crew.passengers.values()) {
           if (r.vehicleId === null || r.seat === null) continue;
           const v = fleet.vehicles[r.vehicleId]!;
-          // Nobody shares a seat.
-          const key = `${v.id}:${r.seat}`;
-          expect(bySeat.has(key), `two riders in seat ${key}`).toBe(false);
-          bySeat.set(key, r.id);
+          // Nobody shares a seat, nor sits in the one kept beside a pregnant rider.
+          for (const place of typeof r.room !== 'number' ? [r.seat] : [r.seat, r.room]) {
+            const key = `${v.id}:${place}`;
+            expect(bySeat.has(key), `two riders in seat ${key}`).toBe(false);
+            bySeat.set(key, r.id);
+          }
           if (v.kind === 'jeepney') continue;
           (seen.get(v.kind) ?? seen.set(v.kind, new Set()).get(v.kind)!).add(r.id);
           if (v.kind === 'uv' && r.phase === 'boarding') uvBoardedAt.add(r.originStop);
-          // Seated: exactly in the seat they were given.
-          if (r.phase === 'seated') {
+          // Riding: exactly in the place they were given (unless moving to a seat).
+          // A pregnant rider with room: between her seat and the one kept.
+          if (r.phase === 'seated' && !r.motion) {
             puvLayout(v.kind).seated(r.seat, seat);
+            if (typeof r.room === 'number') {
+              const beside = puvLayout(v.kind).seated(r.room, newRiderPose());
+              seat.x = (seat.x + beside.x) / 2;
+              seat.z = (seat.z + beside.z) / 2;
+            }
             expect(
               Math.hypot(r.pose.x - seat.x, r.pose.y - seat.y, r.pose.z - seat.z),
             ).toBeLessThan(0.01);
-            expect(r.seat).toBeLessThan(VEHICLES[v.kind].seats);
           }
         }
       }
-      // Riders on every kind, the capacity of each its seats.
+      // Riders on every kind, the capacity of each its seats and standing room,
+      // less a seat kept free beside each pregnant rider on board.
       for (const kind of ['modern', 'uv', 'bus'] as const) {
         expect(seen.get(kind)?.size ?? 0, `riders on a ${kind}`).toBeGreaterThan(0);
-        for (const v of fleet.vehicles.filter((x) => x.kind === kind))
-          expect(v.capacity).toBe(VEHICLES[kind].seats);
+        for (const v of fleet.vehicles.filter((x) => x.kind === kind)) {
+          const kept = [...crew.passengers.values()].filter(
+            (r) => r.vehicleId === v.id && typeof r.room === 'number',
+          ).length;
+          expect(v.capacity).toBe(placesOf(kind) - kept);
+        }
       }
       for (const stop of uvBoardedAt) expect(isTerminal(route, stop)).toBe(true);
     },

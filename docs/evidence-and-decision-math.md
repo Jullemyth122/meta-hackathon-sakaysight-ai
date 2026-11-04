@@ -1,10 +1,16 @@
-# CommuteAI: evidence, decisions and the path to a live product
+# SakaySightAI: evidence, decisions and the path to a live product
 
-CommuteAI aims to make every seat, stop and peso count. Its product hypothesis is that sharing timely information about vehicles, seats and passengers can reduce missed pickups, wasted driving and unnecessary walking. This document explains the evidence behind that idea and the arithmetic needed to test it.
+SakaySightAI aims to make every seat, stop and peso count across **traditional jeepneys, modern jeepneys, UV Express and buses**. Its product hypothesis is that sharing timely information about vehicles, seats and passengers can reduce missed pickups, wasted driving and unnecessary walking. This document explains the evidence behind that idea and the arithmetic needed to test it.
+
+## Vehicle scope of the evidence and examples
+
+The simulator represents all four vehicle types through [vehicle specifications](../src/core/vehicles/specs.ts), [service rules](../src/core/vehicles/stops.ts) and [fare rules](../src/core/fare.ts). The decision framework is shared, but the evidence is not interchangeable: much of the research cited below and the saved financial experiments concern traditional jeepneys. They do not establish fuel economy or savings for a bus, UV Express or modern jeepney.
+
+Apply the formulas with the actual vehicle's capacity, fare, permitted pickup locations, measured fuel use, operating costs and driver/operator arrangement. The 14-seat boarding example below is explicitly a **traditional-jeepney illustration**. A terminal-only UV service cannot use a proposed intermediate roadside pickup; a bus pickup must follow its service's stops. Vehicle-specific virtual cameras and layouts also need separate hardware validation, and a component target for one camera is not a complete multi-door bus installation budget.
 
 ## Product stage and funding disclosure
 
-**CommuteAI is a demo-product prototype built through simulation, intended to become a live transport product.** The author reports that the team currently lacks the funding to produce and install the camera hardware and run a real fleet pilot. The simulation is the team's affordable way to develop the experience, exercise decisions and make the proposed system reviewable before that investment.
+**SakaySightAI is a demo-product prototype built through simulation, intended to become a live transport product.** The author reports that the team currently lacks the funding to produce and install the camera hardware and run a real fleet pilot. The simulation is the team's affordable way to develop the experience, exercise decisions and make the proposed system reviewable before that investment.
 
 There is working software for simulation, browser GPS transport, deterministic planning and configured Meta API integrations. Physical ESP32-to-phone image inference, reliable live passenger-demand collection and field-validated savings are still development and pilot work. The architecture offers a plausible implementation path; it does not prove that the complete live product will work without further engineering. Funding is one constraint alongside data quality, integration, reliability and operator adoption.
 
@@ -16,7 +22,7 @@ The intended deployment is: **camera images → phone detector/counting → occu
 
 The author's research spans the 2016–2019 and 2020–2026 periods. The audit below identifies the specific sources verified for this documentation. It does not retroactively claim that every newly linked reference originally calibrated the code. No separate 2019 or 2020 parameter source is asserted without an identifiable citation and matching value.
 
-| Source and date | What it supports | How to use it in CommuteAI |
+| Source and date | What it supports | How to use it in SakaySightAI |
 | --- | --- | --- |
 | [DOTr/GIZ, Jeepney+ NAMA, 2016](https://changing-transport.org/publications/transforming-public-transport-in-the-philippines/) | Historical transport-sector context and the case for operational improvements. The report includes forward-looking scenarios as well as historical evidence. | Background for the problem and study design. Do not import a historical fleet count or a projection as today's corridor count. |
 | [SAE study 2018-01-1758, 2018](https://saemobilus.sae.org/papers/development-drive-cycles-measurement-fuel-economies-light-duty-vehicles-metro-manila-2018-01-1758) | Its developed public-utility-jeepney drive cycle averages **10.87 km/h**. The **3–12 km/L** range in the abstract covers all tested light-duty vehicle types, not jeepneys alone. | A historical reasonableness check for slow urban service. It does not prove the app's 6 km/L assumption or today's Tungko–Fairview traffic. |
@@ -43,7 +49,7 @@ Saved [experiment outputs](./simulation-results/README.md) include their own mod
 
 ## Decision 1: notice approaching passengers before leaving
 
-**Example interpretation: eight seats are empty/available**, not occupied. Suppose a 14-seat jeepney has six passengers aboard and four people are approaching a permitted pickup point. The useful alert is their number, direction, distance, estimated arrival and whether space remains after the queue ahead of them boards.
+**Example interpretation: eight seats are empty/available**, not occupied. Suppose a 14-seat traditional jeepney has six passengers aboard and four people are approaching a permitted pickup point. The useful alert is their number, direction, distance, estimated arrival and whether space remains after the queue ahead of them boards.
 
 **Available now in the simulation:** an approaching-passenger heads-up, walking/tricycle modes, distance/ETA, and a comparison with the vehicle's ETA. [`arrivalHeadsUp`](../src/core/advisory/driver.ts) says to recheck on arrival; approaching riders do not automatically change the stop/pass decision or reserve seats.
 
@@ -77,7 +83,7 @@ expected driver gain = expected extra fares
 
 With these same simplified costs, break-even is q = 12 ÷ (4 × 15) = **20%**. At q = 10%, expected gain is **−₱6**. The six onboard passengers also incur **4.5 passenger-minutes** of holding delay (6 × 45 ÷ 60), before downstream effects. That service cost must be tracked even if it is not charged to the driver's cash ledger.
 
-Do not delay requested drop-offs, exceed permitted capacity, stop in an unsuitable location or indefinitely wait for an uncertain rider. Recheck updated ETAs and use a maximum hold. A rider transferred from another jeepney is not automatically new revenue for the fleet. A rider this same driver would have picked up anyway is not an incremental gain. The alert's value must be tested against those alternatives.
+Do not delay requested drop-offs, exceed permitted capacity, stop in an unsuitable location or indefinitely wait for an uncertain rider. Recheck updated ETAs and use a maximum hold. A rider transferred from another vehicle is not automatically new revenue for the fleet. A rider this same driver would have picked up anyway is not an incremental gain. The alert's value must be tested against those alternatives.
 
 ## Decision 2: buy cheaper diesel without risking an empty tank
 
@@ -101,7 +107,7 @@ The current guidance keeps drivers on their franchise route. Do not recommend a 
 
 ## Decision 3: reach a closer pickup point from a secondary road
 
-**Product idea:** a commuter walks along a secondary road to an approved pickup point on the jeepney's existing route, instead of travelling farther to their usual waiting area. The jeepney stays on its route. A nearer point is useful only if the commuter can reach it before the vehicle, the vehicle can stop there in the correct direction, and space remains.
+**Product idea:** a commuter walks along a secondary road to an approved pickup point on the selected vehicle's existing route, instead of travelling farther to their usual waiting area. The vehicle stays on its route and boarding remains subject to its service rules. A nearer point is useful only if the commuter can reach it before the vehicle, the vehicle can stop there in the correct direction, and space remains.
 
 **Available now:** the network planner compares candidate mapped stops and direct/one-transfer journeys with walking or tricycle access; the focused commuter view excludes vehicles arriving before the simulated person reaches their stop. **Proposed addition:** jointly choosing a new rendezvous point using a verified pedestrian path, permitted pickup locations, live updates and uncertainty. The current planner does not promise arbitrary roadside interception or verified walking shortcuts.
 
@@ -111,7 +117,7 @@ catchable if time to pickup + uncertainty buffer ≤ vehicle ETA at that point
 choose among feasible points using total journey time, fare, access needs and seats
 ```
 
-**Illustrative example:** the usual waiting area is a 650 m walk; a verified alternative pickup is 180 m away. At 1.2 m/s, walking takes about **9.03 minutes versus 2.50 minutes**, a **470 m / 6.53-minute walking reduction**. Add 20 seconds for crossing and a 30-second buffer at the nearer point. Required lead time becomes **200 seconds**. If the jeepney arrives in four minutes (240 seconds), the margin is **40 seconds**. If its ETA falls below 200 seconds, that recommendation is no longer feasible.
+**Illustrative example:** the usual waiting area is a 650 m walk; a verified alternative pickup is 180 m away. At 1.2 m/s, walking takes about **9.03 minutes versus 2.50 minutes**, a **470 m / 6.53-minute walking reduction**. Add 20 seconds for crossing and a 30-second buffer at the nearer point. Required lead time becomes **200 seconds**. If the vehicle arrives in four minutes (240 seconds), the margin is **40 seconds**. If its ETA falls below 200 seconds, that recommendation is no longer feasible.
 
 This is walking-time savings, not automatically 6.53 minutes off the whole journey. Compare the actual next catchable vehicle and downstream arrival at both points. Do not ask people to run into traffic or cross a barrier; accessibility, crossings and boarding restrictions are hard constraints. If live information becomes stale, withdraw the precise interception advice and fall back to a known stop.
 
@@ -119,7 +125,7 @@ This is walking-time savings, not automatically 6.53 minutes off the whole journ
 
 | Decision | Existing foundation | Additional proof or product work |
 | --- | --- | --- |
-| Avoid a full jeepney and select the next catchable one | Queue-aware seats and arrival estimates | Real occupancy, reliable queue estimates and honest uncertainty; seats are not reserved. |
+| Avoid a full vehicle and select the next catchable one | Queue-aware seats and arrival estimates | Real occupancy, reliable queue estimates and honest uncertainty; seats are not reserved. |
 | Avoid unnecessary empty stops | Stop/pass recommendations and a fuel estimate | Detect unregistered/offline waiting riders and honour drop-offs. “No app report” must not mean “nobody there.” |
 | Reduce near-empty terminal departures | Economics lab's demand-aware hold experiments | Actual terminal demand, dispatcher practices, fairness between drivers and maximum passenger wait. |
 | Avoid an unnecessary tricycle fare | Walking/tricycle access comparison | Verified pedestrian paths, accessibility and user preference. A longer or unsafe walk is not a useful saving. |
@@ -162,4 +168,4 @@ Start with one corridor and a small volunteer fleet, rather than assuming city-w
 4. **Measure both sides:** net driver income after all costs; diesel per completed passenger trip; commuter total journey time and wait distributions; missed pickups, unserved riders, crowding and onboard delay. Include days and drivers that lose out, not only averages.
 5. **Measure Meta's specific benefit:** task completion, answer accuracy, response time, advice understanding/follow-through and incremental cost versus planner-only use. Keep any interactions compatible with safe vehicle operation.
 
-A product claim should follow the evidence: “under these pilot conditions, these drivers and commuters saw this measured change,” with sample size and uncertainty. Until then, CommuteAI is a research-informed, simulation-led product prototype with a concrete deployment plan and testable benefits.
+A product claim should follow the evidence: “under these pilot conditions, these drivers and commuters saw this measured change,” with sample size and uncertainty. Until then, SakaySightAI is a research-informed, simulation-led product prototype with a concrete deployment plan and testable benefits.

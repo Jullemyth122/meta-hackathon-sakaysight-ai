@@ -19,7 +19,8 @@
 import pricesJson from '@/data/diesel-prices.json';
 import stationsJson from '@/data/fuel-stations.json';
 import type { LocalPoint } from '../geo/projection';
-import { aheadOf, type Route } from '../geo/routes';
+import { aheadOf, kerbAt, type Route } from '../geo/routes';
+import type { RoadEdge, StationFit } from '../map/streets';
 
 export interface FuelStation {
   id: string;
@@ -171,60 +172,76 @@ export interface Forecourt {
 
 /** The shortest stretch of road a jeepney turns in and back out over (metres). */
 const FORECOURT_MIN_M = 24;
-/** A forecourt mapped longer than this is cut to this much round the station's point. */
-const FORECOURT_MAX_M = 80;
-/** A station mapped as a point: a forecourt this deep (metres). */
-const POINT_DEPTH_M = 18;
 /** No stop in a forecourt, nor within this of its ends (a jeepney never skips a stop in there). */
 const STOP_CLEAR_M = 8;
-/** The pumps are this far in from the forecourt's edge by the road (metres)… */
-const PUMPS_IN_M = 7;
-/** …and every lane of pumps beyond the first wants this much more depth. */
-export const BAY_APART_M = 4;
+/**
+ * Every station is built the same (scene/world/FuelStations.tsx): this long
+ * beside the road and this deep from its edge, with two lanes of pumps this far
+ * in, an island between them. Room for four or five jeepneys or buses at once.
+ */
+export const STATION_LENGTH_M = 46;
+export const STATION_DEPTH_M = 30;
+export const STATION_LANES_M = [8.5, 13] as const;
+/** Between two lanes of pumps (metres). */
+export const BAY_APART_M = STATION_LANES_M[1] - STATION_LANES_M[0];
+
+/** Where a station a route's vehicles use stands: on the kerb their way through runs along. */
+export function placeOnRoute(route: Route, st: FuelStation): RoadEdge | null {
+  if (st.side !== 'right' || st.roadM > PULL_IN_M) return null;
+  const p = route.polyline.pointAt(st.s);
+  const h = route.polyline.headingAt(st.s, STATION_LENGTH_M / 2);
+  const nx = Math.sin(h);
+  const nz = Math.cos(h);
+  const kerb = kerbAt(route, st.s);
+  return {
+    x: p.x + nx * kerb,
+    z: p.z + nz * kerb,
+    ux: Math.cos(h),
+    uz: -Math.sin(h),
+    nx,
+    nz,
+  };
+}
+
+/** The ground to clear of the map's buildings for each station on `route`: as paths 10 m wide. */
+export function stationClearancePaths(route: Route): LocalPoint[][] {
+  return stationsFor(route).flatMap((st) => {
+    const edge = placeOnRoute(route, st);
+    if (!edge) return [];
+    const half = STATION_LENGTH_M / 2;
+    return [5, 13, 21, 27].map((inM) => [
+      {
+        x: edge.x - edge.ux * half + edge.nx * inM,
+        z: edge.z - edge.uz * half + edge.nz * inM,
+      },
+      {
+        x: edge.x + edge.ux * half + edge.nx * inM,
+        z: edge.z + edge.uz * half + edge.nz * inM,
+      },
+    ]);
+  });
+}
 
 /**
- * The way through `st`'s forecourt for a jeepney driving `direction`, from
- * its mapped outline: as long as the forecourt runs beside the road (cut to
- * be clear of the stops), its pumps PUMPS_IN_M in from the edge by the road
- * (`laneAt`: the lane's metres from the route line), and as many lanes of
- * pumps as its depth holds. Null when no stretch long enough is clear of
- * the stops.
+ * The way through `st`'s forecourt for a jeepney driving `direction`: along
+ * the station as built (cut to be clear of the stops), by the two lanes of
+ * pumps (`laneAt`: the lane's metres from the route line). Null when no
+ * stretch long enough is clear of the stops.
  */
 export function forecourtAlong(
   route: Route,
   st: FuelStation,
   direction: 1 | -1,
   laneAt: (s: number) => number,
+  /** Where it stands as fitted among the map's roads, when that is known. */
+  fit?: Pick<StationFit, 'back' | 'slide' | 'length'>,
 ): Forecourt | null {
-  const line = route.polyline;
-  const L = line.length;
+  const L = route.polyline.length;
   const near = (s: number) => (route.loop ? s + Math.round((st.s - s) / L) * L : s);
-  let lo = Infinity;
-  let hi = -Infinity;
-  let edge = st.roadM - POINT_DEPTH_M / 2;
-  let far = st.roadM + POINT_DEPTH_M / 2;
-  if (st.outline && st.outline.length >= 3) {
-    edge = Infinity;
-    far = -Infinity;
-    // Projected near the station only: a winding route may pass close twice.
-    const window = [st.s - FORECOURT_MAX_M * 2, st.s + FORECOURT_MAX_M * 2] as const;
-    for (const p of st.outline) {
-      const foot = line.project(p, window);
-      lo = Math.min(lo, near(foot.s));
-      hi = Math.max(hi, near(foot.s));
-      edge = Math.min(edge, foot.offset);
-      far = Math.max(far, foot.offset);
-    }
-  } else {
-    lo = hi = st.s;
-  }
-  lo = Math.max(lo, st.s - FORECOURT_MAX_M / 2);
-  hi = Math.min(hi, st.s + FORECOURT_MAX_M / 2);
-  if (hi - lo < FORECOURT_MIN_M) {
-    const mid = (lo + hi) / 2;
-    lo = mid - FORECOURT_MIN_M / 2;
-    hi = mid + FORECOURT_MIN_M / 2;
-  }
+  const middle = st.s + (fit?.slide ?? 0);
+  const half = (fit?.length ?? STATION_LENGTH_M) / 2;
+  let lo = middle - half;
+  let hi = middle + half;
   for (const stop of route.stops) {
     const s = near(stop.s);
     if (s < lo - STOP_CLEAR_M || s > hi + STOP_CLEAR_M) continue;
@@ -234,18 +251,14 @@ export function forecourtAlong(
   }
   if (!route.loop && (lo < 0 || hi > L)) return null;
   if (hi - lo < FORECOURT_MIN_M) return null;
-  const lane = laneAt(st.s);
-  const pumps = Math.min(edge + PUMPS_IN_M, (edge + far) / 2);
-  const depthM = Math.max(4, Math.min(22, pumps - lane));
-  const room = far - lane - 2 - depthM;
-  const bays = 1 + Math.max(0, Math.min(2, Math.floor(room / BAY_APART_M)));
+  const depthM = kerbAt(route, st.s) + (fit?.back ?? 0) + STATION_LANES_M[0] - laneAt(st.s);
   const wrap = (s: number) => (route.loop ? ((s % L) + L) % L : s);
   return {
     inS: wrap(direction === 1 ? lo : hi),
     outS: wrap(direction === 1 ? hi : lo),
     lengthM: hi - lo,
     depthM,
-    bays,
+    bays: STATION_LANES_M.length,
   };
 }
 

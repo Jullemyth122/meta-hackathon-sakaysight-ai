@@ -87,7 +87,8 @@ describe('a working day on the route', () => {
             const y = on[b]!;
             if (
               apart(x.s, y.s) < (length(x.kind) + length(y.kind)) / 2 - 0.3 &&
-              Math.abs(x.laneShiftM - y.laneShiftM) < (width(x.kind) + width(y.kind)) / 2 - 0.1
+              Math.abs(fleet.acrossOf(x) - fleet.acrossOf(y)) <
+                (width(x.kind) + width(y.kind)) / 2 - 0.1
             )
               overlaps++;
           }
@@ -189,9 +190,9 @@ describe('a working day on the route', () => {
         expect(d).toBeLessThan(60);
         if (v.speedMps === 0) {
           waiting++;
-          // At a terminal (round the loop: its start is its end).
+          // In the line at a terminal, moving up past it (round the loop: its start is its end).
           const off = (t: number) => Math.min(Math.abs(t - v.s), L - Math.abs(t - v.s));
-          expect(Math.min(...terminals.map(off))).toBeLessThan(1);
+          expect(Math.min(...terminals.map(off))).toBeLessThan(46);
         }
       });
       // On the open road no more than three nose to tail (a terminal's line is a line).

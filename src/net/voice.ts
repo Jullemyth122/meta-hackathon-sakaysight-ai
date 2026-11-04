@@ -5,7 +5,7 @@
  *                  browser; only that recording is sent and transcribed.
  *   hands-free     the microphone stays open, the browser turns speech into
  *                  text, and only a sentence starting with the wake phrase
- *                  ("Hey Commute, ...") becomes a question (listen below).
+ *                  ("Hey Sakay, ...") becomes a question (listen below).
  *                  Talk with passengers, the radio, "para po": none of it
  *                  is sent, so none of it costs Meta credit. It depends on
  *                  the browser's speech service: Chrome's runs on Google's
@@ -14,31 +14,68 @@
  * Answers are read out by the browser's own speech synthesis, free.
  */
 
-/** Said first, in any of these forms, to address the assistant. */
+/**
+ * Said first, in any of these forms, to address the assistant. Not "hoy sakay":
+ * barkers shout that at every stop, and each false start spends Meta credit.
+ */
 export const WAKE_PHRASES = [
-  'hey commute',
-  'hi commute',
-  'hoy commute',
-  'commute ai',
-  'ok commute',
+  'hey sakay',
+  'hi sakay',
+  'ok sakay',
+  // Speech recognition hears the name either way.
+  'hey sakai',
+  'hi sakai',
+  'ok sakai',
+  'sakay sight',
+  'sakay site',
+  'sakaysight',
 ];
+
+/** What follows a wake phrase ('' when nothing does), or null without one. */
+function afterWake(transcript: string, wake: readonly string[]): string | null {
+  for (const phrase of wake) {
+    // "hey sakay" also matches "Hey, Sakay!" and "hey   sakay".
+    const words = phrase.split(' ').join('[\\s,.!]+');
+    const match = new RegExp(`^\\s*${words}\\b[\\s,.!?:;-]*`, 'i').exec(transcript);
+    if (match) return transcript.slice(match[0].length).trim();
+  }
+  return null;
+}
 
 /**
  * The question in `transcript` if it is addressed to the assistant, else
- * null. "Hey Commute, how many are waiting at Lagro?" gives "how many are
+ * null. "Hey Sakay, how many are waiting at Lagro?" gives "how many are
  * waiting at Lagro?"; anything that does not start with a wake phrase gives
  * null, and so does the wake phrase with nothing after it.
  */
 export function addressed(transcript: string, wake = WAKE_PHRASES): string | null {
-  for (const phrase of wake) {
-    // "hey commute" also matches "Hey, Commute!" and "hey   commute".
-    const words = phrase.split(' ').join('[\\s,.!]+');
-    const match = new RegExp(`^\\s*${words}\\b[\\s,.!?:;-]*`, 'i').exec(transcript);
-    if (!match) continue;
-    const rest = transcript.slice(match[0].length).trim();
-    return rest.length > 0 ? rest : null;
-  }
-  return null;
+  return afterWake(transcript, wake) || null;
+}
+
+/** After the wake phrase alone, the next sentence within this long is the question (ms). */
+export const FOLLOW_UP_MS = 8000;
+
+/** What a sentence was: a question, the wake phrase alone, or none of our business. */
+export type Heard = 'asked' | 'woken' | 'ignored';
+
+/**
+ * Sorting what is heard, sentence by sentence: "Hey Sakay, ..." at once, or
+ * "Hey Sakay" and then a pause before the question, as people say it to
+ * someone across a room. Anything else costs nothing.
+ */
+export function wakeListener(wake = WAKE_PHRASES) {
+  let waitingUntil = -Infinity;
+  return (sentence: string, now: number): { heard: Heard; question: string | null } => {
+    const rest = afterWake(sentence, wake);
+    if (rest === '') {
+      waitingUntil = now + FOLLOW_UP_MS;
+      return { heard: 'woken', question: null };
+    }
+    const question = rest ?? (now <= waitingUntil ? sentence.trim() : null);
+    if (question === null) return { heard: 'ignored', question: null };
+    waitingUntil = -Infinity;
+    return { heard: 'asked', question };
+  };
 }
 
 // The Web Speech API is not in TypeScript's DOM types yet; just what we use.
@@ -75,7 +112,7 @@ export const voiceSupported = () => typeof window !== 'undefined' && recognition
  */
 export function listen(
   onQuestion: (question: string) => void,
-  onHeard?: (sentence: string, addressed: boolean) => void,
+  onHeard?: (sentence: string, heard: Heard) => void,
   onError?: (message: string) => void,
 ): () => void {
   const Ctor = recognitionCtor();
@@ -89,14 +126,15 @@ export function listen(
   rec.lang = 'en-PH';
 
   let running = true;
+  const sort = wakeListener();
   rec.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i]!;
       if (!r.isFinal) continue;
       const sentence = r[0].transcript;
-      const q = addressed(sentence);
-      onHeard?.(sentence, q !== null);
-      if (q) onQuestion(q);
+      const { heard, question } = sort(sentence, performance.now());
+      onHeard?.(sentence, heard);
+      if (question) onQuestion(question);
     }
   };
   // Browsers end a session after a silence; keep listening until stopped.
@@ -311,8 +349,7 @@ export async function record(
 }
 
 /**
- * The recording as text, via /api/transcribe (needs `vercel dev` or a
- * deployment). `keywords` (stop names, "pamasahe", ...) help it hear words
+ * The recording as text, via /api/transcribe. `keywords` (stop names, "pamasahe", ...) help it hear words
  * a general model would miss.
  */
 export async function transcribe(wav: ArrayBuffer, keywords: string[] = []): Promise<string> {
@@ -322,7 +359,7 @@ export async function transcribe(wav: ArrayBuffer, keywords: string[] = []): Pro
     headers: { 'Content-Type': 'audio/wav' },
     body: wav,
   });
-  if (res.status === 404) throw new Error('No /api here. Run `vercel dev` or use the deployment.');
+  if (res.status === 404) throw new Error('No /api here. Use `npm run dev` or the deployment.');
   const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
   if (!res.ok) throw new Error(data.error ?? `Transcription failed (${res.status})`);
   return data.text ?? '';
@@ -477,8 +514,13 @@ async function serverClip(text: string, tagalog: boolean): Promise<string | null
       setServerVoice('off');
       return null;
     }
-    // Quota or a bad key: this answer falls back, the next one tries again.
-    if (!res.ok) return null;
+    // Out of credit: no more asking this visit, the browser's own voices read
+    // (Edge has a Filipino one). Anything else: this answer falls back, the next tries again.
+    if (!res.ok) {
+      const why = await res.text().catch(() => '');
+      if (/quota|credit/i.test(why)) setServerVoice('off');
+      return null;
+    }
     setServerVoice('on');
     const url = URL.createObjectURL(await res.blob());
     clips.set(key, url);

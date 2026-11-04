@@ -96,7 +96,12 @@ describe('drivers overtaking slower jeepneys', () => {
         const inLane = vs.filter((v) => v.laneShiftM > -0.5 && !v.yard);
         for (const a of inLane)
           for (const b of inLane)
-            if (a !== b && b.laneShiftM > -0.5) {
+            // The same lane: side by side across a wide road is not close.
+            if (
+              a !== b &&
+              b.laneShiftM > -0.5 &&
+              Math.abs(twin.fleet.acrossOf(a) - twin.fleet.acrossOf(b)) < 2
+            ) {
               const d = aheadOf(route, a.s, b.s);
               if (d < route.polyline.length / 2) closest = Math.min(closest, d);
             }

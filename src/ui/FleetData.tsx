@@ -8,7 +8,8 @@
  */
 
 import { useState } from 'react';
-import { clockText, dayMoney, type DayMoney } from '@/app/earnings';
+import { FUEL } from '@/core/vehicles/specs';
+import { boundaryRangeText, clockText, dayMoney, type DayMoney } from '@/app/earnings';
 import { useRuntimes } from '@/app/runtimeContext';
 import { jeepneyStatus } from '@/app/status';
 import { useApp } from '@/app/store';
@@ -120,11 +121,12 @@ export function FleetData() {
 
   const exportJeepneys = () =>
     download(
-      `commuteai-fleet-${now.replace(/:/g, '')}.csv`,
+      `sakaysightai-fleet-${now.replace(/:/g, '')}.csv`,
       [
         csvRow([
           'time',
           'plate',
+          'kind',
           'owner_driver',
           'status',
           'stop',
@@ -147,6 +149,7 @@ export function FleetData() {
           csvRow([
             now,
             r.v.plate,
+            r.v.kind ?? 'jeepney',
             r.v.owner ? 'yes' : 'no',
             r.status,
             r.stop,
@@ -172,7 +175,7 @@ export function FleetData() {
   // Each closed day for the whole fleet, and the totals of every jeepney in it.
   const history = twin.fleet.history;
   const dayRows = history.map((h) => {
-    const money = h.totals.map((d) => dayMoney({ day: d }));
+    const money = h.totals.map((d, i) => dayMoney({ ...twin.fleet.vehicles[i], day: d }));
     const add = (g: (m: DayMoney) => number) => money.reduce((n, m) => n + g(m), 0);
     return {
       day: h.day,
@@ -190,11 +193,12 @@ export function FleetData() {
   });
   const exportDays = () =>
     download(
-      `commuteai-days-${now.replace(/:/g, '')}.csv`,
+      `sakaysightai-days-${now.replace(/:/g, '')}.csv`,
       [
         csvRow([
           'day',
           'plate',
+          'kind',
           'owner_driver',
           'riders',
           'km',
@@ -211,10 +215,11 @@ export function FleetData() {
         ]),
         ...history.flatMap((h) =>
           h.totals.map((d, i) => {
-            const m = dayMoney({ day: d });
+            const m = dayMoney({ ...twin.fleet.vehicles[i], day: d });
             return csvRow([
               h.day,
               plateOf(i),
+              twin.fleet.vehicles[i]?.kind ?? 'jeepney',
               d.owner ? 'yes' : 'no',
               d.riders,
               m.km.toFixed(3),
@@ -236,7 +241,7 @@ export function FleetData() {
     );
   const exportLog = () =>
     download(
-      `commuteai-stop-log-${now.replace(/:/g, '')}.csv`,
+      `sakaysightai-stop-log-${now.replace(/:/g, '')}.csv`,
       [
         csvRow(['time', 'plate', 'stop', 'off', 'on', 'fares_php']),
         ...log.map((e) =>
@@ -463,11 +468,14 @@ export function FleetData() {
         Live from the simulation: fares are paid as riders get off, by distance (₱14 for the first 4
         km, ₱2 per started km after; 20% off for students, seniors and PWD). Diesel = km ÷{' '}
         {DEFAULT_EXPERIMENT.movingKmPerL} km/L + idle hours × {DEFAULT_EXPERIMENT.idleLPerHour} L/h
-        at ₱{ADVISORY.fuel.dieselPhpPerL}/L. Boundary: the fixed fee a driver who does not own the
-        jeepney pays its owner for the day (₱{DEFAULT_EXPERIMENT.boundaryPhp}); an owner-driver pays
-        none but their own upkeep (₱{DEFAULT_EXPERIMENT.ownerUpkeepPhp} a day, an assumption).
-        Either is owed from the first trip, so a net starts negative each morning and climbs as
-        fares come in. With and without CommuteAI, month by month: the Profit &amp; service lab.{' '}
+        for a jeepney (each kind its own: a bus {FUEL.bus.kmPerL} km/L) at ₱
+        {ADVISORY.fuel.dieselPhpPerL}/L. Boundary: the fixed fee a driver who does not own the
+        jeepney pays its owner for the day (₱{DEFAULT_EXPERIMENT.boundaryPhp}; a modern jeepney{' '}
+        {boundaryRangeText('modern')}, a UV Express {boundaryRangeText('uv')}, a bus{' '}
+        {boundaryRangeText('bus')}); an owner-driver pays none but their own upkeep (₱
+        {DEFAULT_EXPERIMENT.ownerUpkeepPhp} a day, an assumption). Either is owed from the first
+        trip, so a net starts negative each morning and climbs as fares come in. With and without
+        SakaySightAI, month by month: the Profit &amp; service lab.{' '}
         {tab === 'log' && `Newest ${Math.min(LOG_SHOWN, log.length)} shown; the export has all.`}
       </p>
     </section>

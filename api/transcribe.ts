@@ -10,7 +10,8 @@
  * so a 5-second question costs ~$0.00025). The key stays on the server.
  */
 
-import { metaConfigured } from './_lib/meta';
+import { refused } from './_lib/guard.js';
+import { META_BASE, metaConfigured } from './_lib/meta.js';
 
 const TRANSCRIBE_MODEL = process.env.META_TRANSCRIBE_MODEL ?? 'muse-voice-transcribe-1.0';
 /** 24 kHz mono 16-bit WAV is 48 KB/s: this is about 60 seconds. */
@@ -29,6 +30,8 @@ const MAX_KEYWORDS = 50;
  * this, so longer ones are dropped here (the app also sends short forms).
  */
 const MAX_KEYWORD_CHARS = 30;
+/** A question every 5 seconds, per visitor. */
+const PER_MINUTE = 12;
 
 /** "?keywords=Malaria,Lagro,pamasahe": words to listen for, from the app. */
 function keywordsOf(url: string): string[] {
@@ -41,8 +44,13 @@ function keywordsOf(url: string): string[] {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const no = refused(request, 'transcribe', PER_MINUTE);
+  if (no) return no;
   if (!metaConfigured()) {
     return Response.json({ error: 'Voice needs META_API_KEY on the server' }, { status: 503 });
+  }
+  if (Number(request.headers.get('content-length')) > MAX_AUDIO_BYTES) {
+    return Response.json({ error: 'Recording must be a WAV under 60 seconds' }, { status: 413 });
   }
   const audio = await request.arrayBuffer();
   if (audio.byteLength < 44 || audio.byteLength > MAX_AUDIO_BYTES) {
@@ -68,9 +76,8 @@ export async function POST(request: Request): Promise<Response> {
   );
   form.append('audio', new Blob([audio], { type: 'audio/wav' }), 'question.wav');
 
-  const base = process.env.META_API_BASE ?? 'https://api.meta.ai/v1';
   try {
-    const res = await fetch(`${base}/asr/transcribe`, {
+    const res = await fetch(`${META_BASE}/asr/transcribe`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.META_API_KEY}`, Accept: 'text/plain' },
       body: form,

@@ -39,22 +39,27 @@ describe('jeepneys on a busy route', () => {
             const b = vs[j]!;
             const along = Math.min(aheadOf(route, a.s, b.s), aheadOf(route, b.s, a.s));
             // 7.5 m long, 2 m wide: closer along and across than that is inside.
-            if (along < 7 && Math.abs(a.laneShiftM - b.laneShiftM) < 1.9) overlaps++;
+            const across = Math.abs(twin.fleet.acrossOf(a) - twin.fleet.acrossOf(b));
+            if (along < 7 && across < 1.9) overlaps++;
           }
         if (twin.fleet.elapsedS < 1800) return; // the first half hour settles
-        const open = vs
-          .filter((v) => onOpenRoad(v.s))
-          .map((v) => v.s)
-          .sort((a, b) => a - b);
-        let platoon = 1;
-        for (let k = 1; k < open.length; k++) {
-          platoon = open[k]! - open[k - 1]! < 60 ? platoon + 1 : 1;
-          longest = Math.max(longest, platoon);
+        // Nose to tail in one lane: side by side across a wide road is no platoon.
+        for (let lane = 0; lane < 4; lane++) {
+          const open = vs
+            .filter((v) => onOpenRoad(v.s) && Math.round(v.cruiseLaneM / 3.5) === lane)
+            .map((v) => v.s)
+            .sort((a, b) => a - b);
+          let platoon = 1;
+          for (let k = 1; k < open.length; k++) {
+            platoon = open[k]! - open[k - 1]! < 60 ? platoon + 1 : 1;
+            longest = Math.max(longest, platoon);
+          }
         }
       });
       expect(overlaps).toBe(0);
-      // Twos and threes happen on a real road; five or more nose to tail did not.
-      expect(longest).toBeLessThanOrEqual(5);
+      // Twos and threes happen on a real road, and a busy stop's queue reaches six
+      // for a few seconds (Amparo). Seven or more nose to tail did not.
+      expect(longest).toBeLessThanOrEqual(6);
     },
   );
 

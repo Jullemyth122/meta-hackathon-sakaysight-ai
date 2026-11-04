@@ -11,7 +11,9 @@
  *                     corrects missed boardings.
  *
  * current = start + boarded - alighted, raised whenever the heads in view say
- * there must be more.
+ * there must be more. A door camera (a modern jeepney's, UV Express's or
+ * bus's) sees only the doorway, so it has the crossings alone: headsInCabin
+ * null. Several doors can share one counter (see frame).
  */
 
 export interface DoorCounts {
@@ -124,22 +126,23 @@ export class PassengerCounter {
 
   /**
    * One processed frame: each freshly detected track with its side of the
-   * door, and how many heads are in the cabin (including briefly missed ones).
+   * door, and how many heads are in the cabin (including briefly missed
+   * ones), null when the camera cannot tell. Ids must be unique across every
+   * camera sharing this counter.
    */
   frame(
     nowMs: number,
     tracks: ReadonlyArray<{ id: number; side: 'in' | 'out' | 'unsure' }>,
-    headsInCabin: number,
+    headsInCabin: number | null,
   ): void {
     for (const t of tracks) {
       const event = this.door.observe(t.id, t.side);
       if (event === 'board') this.counts.boarded++;
       else if (event === 'alight') this.counts.alighted++;
     }
-    this.heads.push(nowMs, headsInCabin);
-
     const fromDoor = this.base + this.counts.boarded - this.counts.alighted;
-    if (this.heads.value > fromDoor) {
+    if (headsInCabin !== null) this.heads.push(nowMs, headsInCabin);
+    if (headsInCabin !== null && this.heads.value > fromDoor) {
       this.base += this.heads.value - fromDoor;
       this.counts.corrections++;
     }

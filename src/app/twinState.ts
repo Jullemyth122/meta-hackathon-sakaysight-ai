@@ -7,6 +7,7 @@
  */
 
 import type { PassengerState, TwinState, VehicleState } from '@/core/advisory/model';
+import { kindOf } from '@/core/people/passengerSystem';
 import { newRiderPose } from '@/core/people/riderMotion';
 import { fleetPose } from '@/scene/world/lanes';
 import type { TwinRuntime } from './twinRuntime';
@@ -17,6 +18,7 @@ const rider = newRiderPose();
 export function twinState(runtime: TwinRuntime): TwinState {
   const { fleet, crew, route } = runtime;
 
+  const stopToStopS = fleet.stopToStopS;
   const vehicles = fleet.vehicles.map((v, index): VehicleState => {
     fleetPose(fleet, index, pose);
     return {
@@ -44,6 +46,7 @@ export function twinState(runtime: TwinRuntime): TwinState {
     crew.worldPose(r.id, rider);
     passengers.push({
       id: r.id,
+      kind: kindOf(r),
       phase: r.phase,
       originStop: r.originStop,
       destinationStop: r.destinationStop,
@@ -53,6 +56,8 @@ export function twinState(runtime: TwinRuntime): TwinState {
       z: rider.z,
       queuedAt: r.history.find((h) => h.phase === 'waiting')?.at ?? Infinity,
       approachMode: r.approachMode ?? 'walk',
+      ...(r.flagS !== undefined && { flagS: r.flagS }),
+      ...(r.byStreet && { byStreet: true }),
       ...(r.phase === 'approaching' && r.motion
         ? {
             distanceToStopM: r.motion.remainingDistance(r.t),
@@ -64,5 +69,5 @@ export function twinState(runtime: TwinRuntime): TwinState {
     });
   }
 
-  return { route, vehicles, passengers };
+  return { route, vehicles, passengers, stopToStopS, slowRoad: fleet.slowRoad };
 }

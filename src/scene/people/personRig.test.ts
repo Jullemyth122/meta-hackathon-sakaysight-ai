@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { Matrix4, Vector3 } from 'three';
 import { newRiderPose, RiderMotion } from '@/core/people/riderMotion';
-import { CABIN, SEATS_AT } from '../jeepney/crew';
+import { CABIN, SABIT_AT, SEATS_AT } from '../jeepney/crew';
 import { DRIVER_SEAT, REAR_X, rimPoint, SEATED_ROOT_Y } from '../jeepney/jeepneyGeometry';
-import { HEAD_CENTRE_Y, RigWriter, rootFor, STANDING, type PersonPose } from './personRig';
+import { puvLayout } from '../vehicles/puvCrew';
+import {
+  HEAD_CENTRE_Y,
+  holdRails,
+  poseFromMotion,
+  appearance,
+  RigWriter,
+  rootFor,
+  STANDING,
+  type PersonPose,
+} from './personRig';
 
 const parts = () => ({
   torso: new Matrix4(),
+  belly: new Matrix4(),
   pelvis: new Matrix4(),
   head: new Matrix4(),
   hair: new Matrix4(),
@@ -57,6 +68,44 @@ describe('driver', () => {
     // Torso: capsule radius 0.155 scaled 0.85 along X, centred on the hip line.
     const torsoBack = DRIVER.x - 0.155 * 0.85;
     expect(torsoBack).toBeGreaterThanOrEqual(0.86 - 0.005);
+  });
+});
+
+describe('standing riders', () => {
+  const places = [
+    ...SABIT_AT,
+    ...puvLayout('modern').seats.filter((s) => s.stands),
+    ...puvLayout('bus').seats.filter((s) => s.stands),
+  ];
+
+  it.each([1, 0.93])('have a hand on the rail, wherever they stand (size %f)', (size) => {
+    const vehicle = new Matrix4().makeRotationY(0.7).setPosition(40, 0, -12);
+    const look = { ...appearance(1), size };
+    const out = parts();
+    const person = { ...STANDING } as PersonPose;
+    for (const place of places) {
+      const motion = { ...newRiderPose(), ...place, y: place.y!, hold: 1, stoop: 1 };
+      poseFromMotion(motion, look, 0, person);
+      holdRails(person, motion.hold, place.holds, vehicle);
+      const root = new Matrix4().multiplyMatrices(vehicle, rootFor(motion, size, new Matrix4()));
+      new RigWriter().write(root, person, out);
+      const held = place.holds!;
+      expect(held[0] ?? held[1]).toBeTruthy();
+      for (const j of [0, 1] as const) {
+        const at = held[j];
+        if (!at) continue;
+        const rail = new Vector3(...at).applyMatrix4(vehicle);
+        const hand = HAND.clone().applyMatrix4(out.forearm[j]);
+        // Arms do not stretch: a small rider's fingers may stop just short of a high rail.
+        expect(hand.distanceTo(rail), `${place.x} hand ${j}`).toBeLessThan(0.08);
+      }
+    }
+  });
+
+  it('hold nothing until they take hold', () => {
+    const pose = { ...STANDING } as PersonPose;
+    holdRails(pose, 0, SABIT_AT[0]!.holds, new Matrix4());
+    expect(pose.grip).toBeNull();
   });
 });
 

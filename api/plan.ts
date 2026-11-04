@@ -17,10 +17,14 @@
  * - Diesel fuel consumption & savings in kilometers, liters/mL, and PHP.
  */
 
-import { buildCommutePlan, type PlanOptions } from './_lib/planner';
+import { refused } from './_lib/guard.js';
+import { buildCommutePlan, type PlanOptions } from './_lib/planner.js';
 import type { TripBudgetInputs } from '../src/core/advisory/tripBudget';
 
-const MAX_SNAPSHOT_BYTES = 16_000;
+/** As /api/assist: room for the largest fleet. */
+const MAX_SNAPSHOT_BYTES = 96_000;
+/** Free of credit, but not of the server's time. */
+const PER_MINUTE = 60;
 
 interface PlanRequestBody {
   tripBudgetInputs?: unknown;
@@ -36,6 +40,8 @@ interface PlanRequestBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const no = refused(request, 'plan', PER_MINUTE);
+  if (no) return no;
   let body: PlanRequestBody;
   try {
     body = (await request.json()) as PlanRequestBody;
@@ -71,7 +77,16 @@ export async function POST(request: Request): Promise<Response> {
   const plan = buildCommutePlan(body.snapshot, opts);
   return Response.json({
     text: plan.directAnswer,
-    plan,
+    // Who asked and their plan; every stop for every vehicle runs to megabytes.
+    plan: {
+      detectedRole: plan.detectedRole,
+      route: plan.route,
+      stops: plan.stops,
+      focusedDriverPlan: plan.focusedDriverPlan,
+      focusedCommuterAdvice: plan.focusedCommuterAdvice,
+      sceneActions: plan.sceneActions,
+      tripBudget: plan.tripBudget,
+    },
     creditUsed: false,
     source: 'deterministic-planner',
   });

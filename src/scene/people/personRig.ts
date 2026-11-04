@@ -30,7 +30,7 @@ import {
 import { mergeParts } from '../jeepney/geometryKit';
 
 /** Parts drawn once per person. */
-export const SINGLE_PARTS = ['torso', 'pelvis', 'head', 'hair'] as const;
+export const SINGLE_PARTS = ['torso', 'pelvis', 'head', 'hair', 'belly'] as const;
 /** Parts drawn twice per person (instance 2n = right / +Z side, 2n + 1 = left). */
 export const PAIRED_PARTS = ['thigh', 'shin', 'foot', 'sleeve', 'forearm'] as const;
 export type BodyPart = (typeof SINGLE_PARTS)[number] | (typeof PAIRED_PARTS)[number];
@@ -46,6 +46,7 @@ export const PART_COLOR: Record<BodyPart, keyof Outfit> = {
   head: 'skin',
   forearm: 'skin',
   hair: 'hair',
+  belly: 'shirt',
 };
 
 // Joint positions in the root frame (from the prototype's rig).
@@ -58,6 +59,10 @@ const ELBOW_DROP = 0.25;
 const NECK_Y = 1.27;
 /** Head centre above the neck joint. */
 const HEAD_Y = 0.13;
+/** A pregnant rider's belly: its size, and how far forward of the spine and how high. */
+const BELLY_R = 0.13;
+const BELLY_X = 0.09;
+const BELLY_Y = 0.93;
 /**
  * Head centre above the root at size 1. Legs do not move the torso, so it is
  * the same standing or seated: multiply by the root's vertical scale.
@@ -121,6 +126,8 @@ export function rigGeometries(): Record<BodyPart, BufferGeometry> {
       ellipsoid(HEAD_R, ...HEAD_SCALE, 0.01, HEAD_Y),
     ])!,
     hair: hairCap(HEAD_R),
+    // A pregnant rider's: rounded out in front of the waist, under the shirt.
+    belly: ellipsoid(BELLY_R, 0.95, 1, 1.15, BELLY_X, BELLY_Y),
     thigh: capsule(0.08, 0.2, 1, 1, -0.17),
     shin: capsule(0.07, 0.18, 1, 1, -0.16),
     foot: ellipsoid(0.13, 1, 0.42, 0.62, 0.05, -0.34),
@@ -162,9 +169,12 @@ export interface PersonPose {
   reach?: number;
   /**
    * World-space points the [right (+Z side), left] hands must hold (e.g. the
-   * steering wheel rim). When set, the arms are solved to reach them exactly.
+   * steering wheel rim). When set, the arms are solved to reach them exactly;
+   * a null hand goes on with the rest of the pose.
    */
-  grip?: readonly [Vector3, Vector3] | null;
+  grip?: readonly [Vector3 | null, Vector3 | null] | null;
+  /** 0..1: how far the hands have got to `grip` (1 when absent). */
+  gripShare?: number;
 }
 
 export const STANDING: PersonPose = {
@@ -182,6 +192,7 @@ export const STANDING: PersonPose = {
   liftLeg: 0,
   reach: 0,
   grip: null,
+  gripShare: 1,
 };
 
 /** Shoulder to elbow, and elbow to the centre of the hand (forearm geometry). */
@@ -310,6 +321,7 @@ export interface BodyMotion {
   lift?: number;
   liftLeg?: 0 | 1;
   reach?: number;
+  hold?: number;
 }
 
 /**
@@ -337,7 +349,31 @@ export function poseFromMotion(
   out.liftLeg = m.liftLeg ?? 0;
   out.reach = m.reach ?? 0;
   out.grip = null;
+  out.gripShare = 1;
   return out;
+}
+
+const heldAt: [Vector3, Vector3] = [new Vector3(), new Vector3()];
+const held: [Vector3 | null, Vector3 | null] = [null, null];
+
+/**
+ * Hands on the rails (`holds`, vehicle frame, one or both) for someone
+ * standing, `share` of the way there. `vehicle` is the frame they ride in.
+ * Good until the next call: emit the person straight after.
+ */
+export function holdRails(
+  out: PersonPose,
+  share: number,
+  holds: readonly [readonly number[] | null, readonly number[] | null] | undefined,
+  vehicle: Matrix4,
+): void {
+  if (!holds || share <= 0) return;
+  for (const j of [0, 1] as const) {
+    const at = holds[j];
+    held[j] = at ? heldAt[j].set(at[0]!, at[1]!, at[2]!).applyMatrix4(vehicle) : null;
+  }
+  out.grip = held;
+  out.gripShare = share;
 }
 
 const up = new Vector3(0, 1, 0);
@@ -398,6 +434,8 @@ export class RigWriter {
     pose: PersonPose,
     out: Record<(typeof SINGLE_PARTS)[number], Matrix4> &
       Record<(typeof PAIRED_PARTS)[number], [Matrix4, Matrix4]>,
+    /** Draw them pregnant; everyone else's belly part is folded away to nothing. */
+    pregnant = false,
   ): void {
     const { m, joint, limb, euler } = this;
     const { walk: w, sit: k } = pose;
@@ -424,6 +462,8 @@ export class RigWriter {
     m.makeRotationY(pose.headYaw).setPosition(0, NECK_Y, 0);
     out.head.multiplyMatrices(out.torso, m);
     out.hair.copy(out.head);
+    if (pregnant) out.belly.copy(out.torso);
+    else out.belly.makeScale(0, 0, 0);
 
     for (const j of [0, 1] as const) {
       const sd = j === 0 ? 1 : -1;
@@ -450,31 +490,28 @@ export class RigWriter {
       out.shin[j].copy(limb);
       out.foot[j].copy(limb);
 
-      let shoulder: number;
-      let elbow: number;
-      let splay: number;
+      // Counter-swing when walking, otherwise the pose's arm angles…
+      let shoulder = -0.45 * swing * sd * w + pose.shoulder * (1 - w);
+      let elbow = pose.elbow;
+      // Rotation about X by -sd·θ swings an arm outward; +sd·θ brings it in.
+      let splay = sd * (pose.inward - 0.1 * (1 - k * 0.6));
+      // …blended toward reaching forward and out for the grab poles.
+      shoulder += (1.2 - shoulder) * reach;
+      elbow += (0.3 - elbow) * reach;
+      splay += (-sd * 0.2 - splay) * reach;
       const grip = pose.grip?.[j];
       if (grip) {
-        // Hold a point exactly (the steering wheel rim): solve the arm in the
-        // torso's own frame, which also undoes the body's scale.
+        // Hold a point exactly (the steering wheel rim, a rail): solve the arm
+        // in the torso's own frame, which also undoes the body's scale.
         this.inverse.copy(out.torso).invert();
         this.target.copy(grip).applyMatrix4(this.inverse);
         this.target.y -= SHOULDER_Y;
         this.target.z -= sd * SHOULDER_Z;
         const ik = this.solveArm(this.target);
-        shoulder = ik.swing;
-        splay = ik.splay;
-        elbow = ik.elbow;
-      } else {
-        // Counter-swing when walking, otherwise the pose's arm angles…
-        shoulder = -0.45 * swing * sd * w + pose.shoulder * (1 - w);
-        elbow = pose.elbow;
-        // Rotation about X by -sd·θ swings an arm outward; +sd·θ brings it in.
-        splay = sd * (pose.inward - 0.1 * (1 - k * 0.6));
-        // …blended toward reaching forward and out for the grab poles.
-        shoulder += (1.2 - shoulder) * reach;
-        elbow += (0.3 - elbow) * reach;
-        splay += (-sd * 0.2 - splay) * reach;
+        const share = pose.gripShare ?? 1;
+        shoulder += (ik.swing - shoulder) * share;
+        splay += (ik.splay - splay) * share;
+        elbow += (ik.elbow - elbow) * share;
       }
       euler.set(splay, 0, shoulder, 'ZYX');
       m.makeRotationFromEuler(euler).setPosition(0, SHOULDER_Y, sd * SHOULDER_Z);

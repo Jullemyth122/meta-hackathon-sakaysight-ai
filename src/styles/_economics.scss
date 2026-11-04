@@ -1,5 +1,7 @@
 .economics-stage {
   grid-template-columns: minmax(0, 1fr) 370px;
+  gap: 12px;
+  padding: 12px 16px;
 }
 .economics-results {
   overflow: auto;

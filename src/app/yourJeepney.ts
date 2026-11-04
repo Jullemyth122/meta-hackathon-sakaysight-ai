@@ -8,6 +8,7 @@ import type { TwinRuntime } from './twinRuntime';
 import { twinState } from './twinState';
 import { commuterView, type CommuterQuery } from '@/core/advisory/commuter';
 import { dispatch } from '@/core/advisory/dispatch';
+import { KIND_WORD } from '@/core/vehicles/specs';
 
 export interface YourJeepney {
   vehicle: number;
@@ -30,7 +31,7 @@ export function yourJeepney(twin: TwinRuntime, query: CommuterQuery): YourJeepne
   if (view.riding)
     return {
       vehicle: view.riding.vehicle,
-      text: `Your jeepney · ${view.riding.plate} · ${minutes(view.riding.etaS)} to ${view.destination.name}`,
+      text: `Your ${KIND_WORD[view.riding.kind]} · ${view.riding.plate} · ${minutes(view.riding.etaS)} to ${view.destination.name}`,
       full: false,
     };
   if (view.phase === 'alighting' || view.phase === 'walking' || view.phase === 'arrived')
@@ -40,7 +41,7 @@ export function yourJeepney(twin: TwinRuntime, query: CommuterQuery): YourJeepne
     const seats = p.seatsForYou === 1 ? '1 seat for you' : `${p.seatsForYou} seats for you`;
     return {
       vehicle: p.vehicle,
-      text: `Your jeepney · ${p.plate} · ${minutes(p.etaS)} · ${seats}`,
+      text: `Your ${KIND_WORD[p.kind]} · ${p.plate} · ${minutes(p.etaS)} · ${seats}`,
       full: false,
     };
   }

@@ -9,51 +9,52 @@
  *     driverPlate?: string,
  *     commuterStop?: string,
  *     destinationStop?: string,
- *     mode?: 'ai' | 'math',
  *     screen?: object   // what the person's app shows; the answer must agree
  *   }
  *
  * Returns:
  *   {
  *     text: string,
- *     plan: CommutePlanResult,
  *     creditUsed: boolean,
  *     cached?: boolean,
  *     source: 'meta-ai' | 'deterministic-planner' | 'deterministic-fallback'
  *   }
  *
  * How it works:
- * 1. First runs the deterministic CommuteAI planner (`api/_lib/planner.ts`) to
- *    calculate exact commuter ETAs, seat availability after intermediate
- *    drop-offs, LTFRB fares, First-Come-First-Served (FCFS) multi-jeepney stop
- *    assignments (nearest jeepney claims waiting riders first), and fuel/peso
- *    savings in km, liters, and PHP.
- * 2. If `mode === 'math'`, `META_SAVE_CREDITS=true`, or Meta API credentials
- *    are not set, returns the deterministic answer immediately ($0.00 spent).
- * 3. Otherwise passes the snapshot + pre-computed math plan to Meta AI (with
- *    60-second caching to protect the $150 free credit).
+ * 1. First works out the facts (`api/_lib/planner.ts`): exact commuter ETAs, seat
+ *    availability after intermediate drop-offs, LTFRB fares, First-Come-First-
+ *    Served (FCFS) multi-jeepney stop assignments (nearest jeepney claims waiting
+ *    riders first), and fuel/peso savings in km, liters, and PHP.
+ * 2. Muse answers from those facts, with 60-second caching to protect the $150
+ *    free credit.
+ * 3. Only if `META_SAVE_CREDITS=true`, Meta API credentials are not set, or Muse
+ *    cannot be reached do the facts go back as they are, marked as such.
  */
 
+import { arrivalAdvice } from './_lib/arrivalAdvice.js';
+import { fitScreen } from './_lib/fitScreen.js';
+import { refused } from './_lib/guard.js';
 import {
   chatWithCache,
   creditSaverEnabled,
   MetaEmptyReplyError,
   metaConfigured,
-} from './_lib/meta';
-import { buildCommutePlan, type PlanOptions } from './_lib/planner';
+} from './_lib/meta.js';
+import { buildCommutePlan, type PlanOptions } from './_lib/planner.js';
 import type { TripBudgetInputs } from '../src/core/advisory/tripBudget';
-import { arrivalAdvice } from './_lib/arrivalAdvice';
 
 const MAX_QUESTION_CHARS = 500;
 /**
  * The snapshot is never sent to Meta; only the planner reads it. The Live
- * twin's has the whole fleet at real positions (up to 200 jeepneys).
+ * twin's has the whole fleet at real positions (up to 600 vehicles).
  */
-const MAX_SNAPSHOT_BYTES = 48_000;
+const MAX_SNAPSHOT_BYTES = 96_000;
+/** A question every 3 seconds, per visitor. */
+const PER_MINUTE = 20;
 /** An operator question sends Meta only the busiest stops, not all of them. */
 const OPERATOR_STOPS = 5;
 
-const SYSTEM_PROMPT = `You are CommuteAI's transit assistant for Philippine jeepneys. Reply in the language the user writes in (English, Tagalog or Taglish).
+const SYSTEM_PROMPT = `You are SakaySightAI's transit assistant for Philippine public transport: jeepneys, modern jeepneys, UV Express and buses. Call each vehicle what it is (SCREEN and ComputedPlan give its kind); "jeepney" below stands for any of them. A UV Express takes riders on only at its terminals. Reply in the language the user writes in (English, Tagalog or Taglish).
 Answer the question that was asked, first, in plain words. Then add only what helps that person act. A simple question gets 1–2 sentences; a question asking why, how, or about several things may get a short paragraph (at most about 120 words). No lists of every stop, no repeating the whole plan.
 COMMUTERS: say which jeepney (plate) takes them, in how many minutes, and whether it has a seat for them. Use seatsLeftForYou: people already waiting at the stop board first, so a jeepney with free seats can still be full for this commuter; then point them to the next jeepney with seatsLeftForYou > 0. Give the fare (regular and Student/Senior/PWD) when asked or when it helps.
 DRIVERS: say whether to stop or pass the next stop and why (riders waiting for you, riders getting off, or a jeepney ahead already taking them). For fuel, give the saving in mL and pesos. For refuelling, use SCREEN.refuel and SCREEN.dieselAhead: only stations on the driver's own side that they can pull into, nearest first, with the brand's DOE price range for the week and the expected price (middle of the range, not that pump's exact price). Give the choice: fill up now at the nearest, or, if the tank can wait, the cheaper one further on and what it saves on a top-up. SCREEN.tank, when given, is the diesel in the tank now (litres, % full, and whether the driver is already going to fill up): use it to say whether they need to fill up now. The driver's map only shows gas stations within SCREEN.mapRadiusM; a station with onYourMap=false is beyond it, so call it "further ahead, not on your map yet" and give its distance, never suggest one that is not in SCREEN.dieselAhead. A jeepney must keep to its franchise route: never suggest other roads, shortcuts or U-turns. More earnings come from picking up the riders assigned to them, skipping empty stops, and refuelling where it is cheapest on their way.
@@ -76,11 +77,12 @@ interface AssistRequestBody {
   destinationStop?: unknown;
   commuterKm?: unknown;
   dieselPricePhpPerLiter?: unknown;
-  mode?: unknown;
   screen?: unknown;
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const no = refused(request, 'assist', PER_MINUTE);
+  if (no) return no;
   let body: AssistRequestBody;
   try {
     body = (await request.json()) as AssistRequestBody;
@@ -123,20 +125,17 @@ export async function POST(request: Request): Promise<Response> {
 
   // Always compute the deterministic math & FCFS conflict plan first ($0.00 cost).
   const plan = buildCommutePlan(body.snapshot, planOpts);
-  const screenJson =
-    body.screen && typeof body.screen === 'object' ? JSON.stringify(body.screen) : '';
-  const screen = screenJson.length <= MAX_SCREEN_BYTES ? screenJson : '';
+  const screen = fitScreen(body.screen, MAX_SCREEN_BYTES);
   const arrivals =
     !plan.tripBudget && screen ? arrivalAdvice(question, body.role, body.screen) : null;
   const directAnswer = arrivals || plan.directAnswer;
 
-  // If math-only mode is requested, credit-saver is enabled, or Meta API is not configured,
-  // return the deterministic answer directly without spending any Meta API credits.
-  const mathOnly = body.mode === 'math' || creditSaverEnabled() || !metaConfigured();
-  if (mathOnly || plan.tripBudget) {
+  // Muse off on this server (credit saver, or no key): the facts as they are. So
+  // too a whole-trip budget: exact pesos, which the app has Muse tell on the device
+  // (AskBox), where its wording is checked against them.
+  if (creditSaverEnabled() || !metaConfigured() || plan.tripBudget) {
     return Response.json({
       text: directAnswer,
-      plan,
       creditUsed: false,
       source: 'deterministic-planner',
     });
@@ -193,7 +192,6 @@ export async function POST(request: Request): Promise<Response> {
     );
     return Response.json({
       text,
-      plan,
       creditUsed: !cached,
       cached,
       source: 'meta-ai',
@@ -204,7 +202,6 @@ export async function POST(request: Request): Promise<Response> {
     // answer so the UI never breaks. An empty reply was still billed.
     return Response.json({
       text: directAnswer,
-      plan,
       creditUsed: err instanceof MetaEmptyReplyError,
       source: 'deterministic-fallback',
     });

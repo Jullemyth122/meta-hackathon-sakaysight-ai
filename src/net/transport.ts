@@ -15,8 +15,16 @@ export type TransportKind = 'firebase' | 'loopback';
 export interface Transport {
   readonly kind: TransportKind;
   publish(update: SessionUpdate): Promise<void>;
-  /** Called for every update on any session. Returns an unsubscribe function. */
-  subscribe(onUpdate: (update: SessionUpdate) => void): () => void;
+  /** Forget a session's last place. */
+  clear(sessionId: string): Promise<void>;
+  /**
+   * Called for every update of a session filed under one of `areas` (areaOf
+   * in core/tracking/area.ts): only what the map shows, not every phone.
+   * Returns an unsubscribe function.
+   */
+  subscribe(areas: readonly string[], onUpdate: (update: SessionUpdate) => void): () => void;
+  /** The sessions filed under `areas` now, once: for Muse, when it is asked. */
+  fetch(areas: readonly string[]): Promise<SessionUpdate[]>;
 }
 
 /** Basic shape check: anything from the network is untrusted until it passes. */

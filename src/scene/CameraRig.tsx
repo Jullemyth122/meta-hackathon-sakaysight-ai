@@ -45,6 +45,10 @@ interface Shot {
 /** Where the street shot looks: this far along the route from the start. */
 const STREET_AT_M = 450;
 const STREET_DISTANCE_M = 340;
+const OPENING_BACK = 1.6;
+const OPENING_PITCH = MathUtils.degToRad(44);
+const OPENING_YAW = 0.25;
+const OPENING_S = 2.4;
 /**
  * Chase camera: 3/4 view behind and slightly above the cabin so both the
  * street outside and the passengers inside (through the rear doorway and side
@@ -113,7 +117,8 @@ function frameShot(points: readonly LocalPoint[], camera: PerspectiveCamera): Sh
       return Math.abs(p.x) <= OVERVIEW_FILL && Math.abs(p.y) <= OVERVIEW_FILL;
     });
   };
-  let lo = 200;
+  // Close enough for a small spot (a crossing, a person); far enough for a whole route.
+  let lo = 30;
   let hi = 40_000;
   for (let i = 0; i < 30; i++) {
     const mid = (lo + hi) / 2;
@@ -144,6 +149,16 @@ function streetShot(route: Route): Shot {
     MathUtils.degToRad(34),
     p.heading - 0.6,
   );
+}
+
+/**
+ * Where the first view waits behind the loading screen: above and back from
+ * the street shot, so that every map tile it settles into is already loaded.
+ */
+function openingShot(route: Route): Shot {
+  const { target } = streetShot(route);
+  const p = route.polyline.pointAt(Math.min(STREET_AT_M, route.polyline.length / 2));
+  return orbit(target, STREET_DISTANCE_M * OPENING_BACK, OPENING_PITCH, p.heading - OPENING_YAW);
 }
 
 /** Current ground pose of a follow target, or null if it no longer exists. */
@@ -179,6 +194,7 @@ export function CameraRig() {
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const controls = useThree((s) => s.controls) as Controls | null;
   const scene = useThree((s) => s.scene);
+  const gl = useThree((s) => s.gl);
   const shot = useApp((s) => s.shot);
   const follow = useApp((s) => s.follow);
   const tracked = useApp((s) => s.trackedRiderId);
@@ -230,8 +246,8 @@ export function CameraRig() {
 
   // Dev only: expose the camera next to the runtimes (see App.tsx).
   useEffect(() => {
-    if (import.meta.env.DEV) Object.assign(window, { __camera: { camera, controls, scene } });
-  }, [camera, controls]);
+    if (import.meta.env.DEV) Object.assign(window, { __camera: { camera, controls, scene, gl } });
+  }, [camera, controls, gl]);
 
   // The user taking the controls wins over any running animation.
   useEffect(() => {
@@ -241,14 +257,22 @@ export function CameraRig() {
     return () => controls.removeEventListener('start', cancel);
   }, [controls]);
 
-  // New route: show all of it, then dive in to street level.
+  // New route: show all of it, then dive in to street level. The first one
+  // waits for the loading screen, and settles in as that lifts.
+  const started = useApp((s) => s.started);
+  const opened = useRef(false);
   useEffect(() => {
-    fly(overviewShot(twin.route, camera), 0);
-    fly(streetShot(twin.route), 2.4, 0.9);
+    if (!started) fly(openingShot(twin.route), 0);
+    else if (!opened.current) fly(streetShot(twin.route), OPENING_S);
+    else {
+      fly(overviewShot(twin.route, camera), 0);
+      fly(streetShot(twin.route), 2.4, 0.9);
+    }
+    opened.current = started;
     return () => {
       tween.current?.kill();
     };
-  }, [twin.route, camera, fly]);
+  }, [twin.route, camera, fly, started]);
 
   // Explicit shot requests from the UI. seq 0 is the initial state, not a request.
   useEffect(() => {

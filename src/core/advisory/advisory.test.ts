@@ -236,9 +236,9 @@ describe('assistant snapshot', () => {
             state.vehicles[vehicle]!.plate,
           );
           const me = state.vehicles[vehicle]!.s - 1;
-          const between = state.vehicles.filter(
-            (v) => aheadOf(state.route, me, v.s) <= snapshot.route.lengthKm * 1000 + 1,
-          );
+          const lastStop = state.route.stops[screen.ahead.at(-1)!.stop]!;
+          const last = aheadOf(state.route, me, lastStop.s);
+          const between = state.vehicles.filter((v) => aheadOf(state.route, me, v.s) <= last);
           expect(snapshot.simulatedFleet.map((v) => v.plate).sort()).toEqual(
             between.map((v) => v.plate).sort(),
           );

@@ -1,6 +1,7 @@
 import { useRuntimes } from '@/app/runtimeContext';
 import { twinState } from '@/app/twinState';
 import { approachTime, incomingMapData } from '@/scene/world/incomingMap';
+import { Fold } from './Tabs';
 import { useTicker } from './useTicker';
 import '@/styles/incoming.scss';
 
@@ -13,10 +14,17 @@ export function IncomingStopsPanel() {
   const waiting = state.passengers.filter((p) => p.phase === 'waiting').length;
   return (
     <section className="section">
-      <h3 className="section__title">People heading to stops</h3>
-      <p>
-        <strong>{waiting}</strong> waiting · <strong>{incoming}</strong> approaching within 500 m
-      </p>
+      <div className="stats">
+        <div className="stat">
+          <span className="stat__value">{waiting}</span>
+          <span className="stat__label">Waiting at stops</span>
+        </div>
+        <div className="stat">
+          <span className="stat__value">{incoming}</span>
+          <span className="stat__label">Within 500 m</span>
+        </div>
+      </div>
+      <h3 className="section__title">Busiest stops</h3>
       <ul className="incoming-stops">
         {stops
           .filter((s) => s.incoming.length > 0)
@@ -43,12 +51,14 @@ export function IncomingStopsPanel() {
             );
           })}
       </ul>
-      {incoming === 0 && <p className="muted">No commuters approaching within 500 m right now.</p>}
-      <p className="fine">
-        Simulated journeys. Teal map labels show stop counts; amber labels follow approaching
-        commuters; purple labels follow people walking home from the jeepney in the evening.
-        Approaching riders join the queue when they reach the stop.
-      </p>
+      {incoming === 0 && <p className="fine">Nobody is heading to a stop right now.</p>}
+      <Fold title="Reading the map labels">
+        <p className="fine">
+          Simulated journeys. Teal labels show stop counts, amber follow people on their way to a
+          stop, and purple follow people walking home in the evening. People on their way join the
+          queue when they reach the stop.
+        </p>
+      </Fold>
     </section>
   );
 }

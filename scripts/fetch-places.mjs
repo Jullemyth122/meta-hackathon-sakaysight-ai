@@ -16,7 +16,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
-const USER_AGENT = 'CommuteAI hackathon prototype (places script)';
+const USER_AGENT = 'SakaySightAI hackathon prototype (places script)';
 /** Metro Manila with San Jose del Monte and the edges of Rizal, Cavite and Bulacan. */
 const BBOX = '14.30,120.88,14.86,121.20';
 /** Two places of the same name closer than this are one (a mall mapped as a node and a way). */

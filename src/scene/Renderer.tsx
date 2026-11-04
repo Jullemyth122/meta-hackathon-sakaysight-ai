@@ -10,10 +10,12 @@
  * and anything else that patches shaders. Labels are HTML overlays instead.
  */
 
-import { Canvas, extend, type ThreeToJSXElements } from '@react-three/fiber';
-import type { ReactNode } from 'react';
+import { Canvas, extend, useThree, type ThreeToJSXElements } from '@react-three/fiber';
+import { useEffect, type ReactNode } from 'react';
 import * as THREE from 'three/webgpu';
+import { onPhone } from '@/app/device';
 import { config } from '@/config';
+import { viewTiming } from '@/core/performance/frameTiming';
 import { FrameMonitor } from './FrameMonitor';
 
 declare module '@react-three/fiber' {
@@ -36,22 +38,55 @@ interface Props {
   onLost?: (reason: string) => void;
 }
 
+/** Half a screen's rate and a little less sharp: a phone's battery is the drawing. */
+const PHONE_FRAME_MS = 32;
+const PHONE_DPR = 1.5;
+
+/** Asks for a frame at the phone's pace (the Canvas draws on demand there). */
+function PhonePace() {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    let raf = 0;
+    let last = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (now - last < PHONE_FRAME_MS) return;
+      last = now;
+      invalidate();
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [invalidate]);
+  return null;
+}
+
 export function Renderer({ children, camera, paused = false, onBackend, onLost }: Props) {
   return (
     <Canvas
       shadows
-      frameloop={paused ? 'never' : 'always'}
+      frameloop={paused ? 'never' : onPhone ? 'demand' : 'always'}
       camera={{ fov: 42, near: 0.3, far: 6000, ...camera }}
       // Cap pixel ratio: 3× phones would quadruple fill cost for no visible gain.
-      dpr={[1, 1.75]}
+      dpr={[1, onPhone ? PHONE_DPR : 1.75]}
       gl={async (props) => {
         const renderer = new THREE.WebGPURenderer({
           ...(props as ConstructorParameters<typeof THREE.WebGPURenderer>[0]),
           antialias: true,
           forceWebGL: config.renderer === 'webgl',
           powerPreference: 'high-performance',
+          // From 5 cm to 150 km, an ordinary depth buffer cannot tell what is in
+          // front of what far from the camera: surfaces flicker as the view turns.
+          reversedDepthBuffer: true,
+          // For the view's GPU time in the header (FrameMonitor); off by itself if unsupported.
+          trackTimestamp: true,
         });
         await renderer.init();
+        const adapter = (
+          renderer.backend as {
+            device?: { adapterInfo?: { vendor?: string; description?: string } };
+          }
+        ).device?.adapterInfo;
+        viewTiming.gpuName = adapter?.description || adapter?.vendor || null;
         renderer.onDeviceLost = (info) => {
           console.warn('GPU device lost:', info.message);
           onLost?.(info.message);
@@ -65,6 +100,7 @@ export function Renderer({ children, camera, paused = false, onBackend, onLost }
     >
       {/* Restarted after a pause, so the gap is not measured as one long frame. */}
       <FrameMonitor key={String(paused)} />
+      {onPhone && !paused && <PhonePace />}
       {children}
     </Canvas>
   );

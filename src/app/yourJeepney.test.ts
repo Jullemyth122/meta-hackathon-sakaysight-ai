@@ -60,7 +60,7 @@ describe('the commuter’s jeepney on the map', () => {
         twin.step(0.1, i * 100);
         seen.add(me()?.phase ?? 'gone');
         if (me()?.phase === 'seated')
-          expect(yourJeepney(twin, { passenger: id })?.text).toContain('Your jeepney');
+          expect(yourJeepney(twin, { passenger: id })?.text).toMatch(/^Your /);
       }
       for (const phase of ['waiting', 'boarding', 'seated', 'alighting'])
         expect(seen).toContain(phase);

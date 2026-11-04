@@ -11,8 +11,11 @@
   border-radius: 8px;
   background: var(--surface);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
   cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
 
   &:hover:not(:disabled) {
     border-color: var(--muted);
@@ -23,10 +26,17 @@
     cursor: not-allowed;
   }
 
+  &[aria-pressed='true'] {
+    border-color: var(--accent-ink);
+    color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  }
+
   &--primary {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--accent-fg);
+    font-weight: 600;
 
     &:hover:not(:disabled) {
       border-color: var(--accent);
@@ -40,7 +50,7 @@
 
   &--small {
     padding: 3px 8px;
-    font-size: 11.5px;
+    font-size: 12px;
   }
 
   &--big {
@@ -55,11 +65,11 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 9px;
+  padding: 3px 9px;
   border: 1px solid var(--line);
   border-radius: 99px;
-  font-size: 11.5px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
   color: var(--muted);
   background: var(--surface);
@@ -81,21 +91,22 @@
     @include tone(var(--bad));
   }
   &--link:hover {
-    color: var(--accent);
+    color: var(--accent-ink);
   }
 }
 
-// Two-column key/value list.
+// Two-column key/value list: names on the left, values lined up on the right.
 .kv {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 12px;
-  font-size: 12.5px;
+  gap: 6px 16px;
+  font-size: 13px;
 
   > :nth-child(odd) {
     color: var(--muted);
   }
   > :nth-child(even) {
+    text-align: right;
     overflow-wrap: anywhere;
   }
 }
@@ -116,5 +127,192 @@
   input {
     margin-top: 3px;
     accent-color: var(--accent);
+  }
+}
+
+// Choosing one of a few: joined buttons on a shared track.
+.seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+
+  button {
+    padding: 5px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--fg);
+    }
+
+    &.is-on,
+    &[aria-pressed='true'] {
+      background: var(--surface-2);
+      color: var(--fg);
+    }
+  }
+
+  &--wide {
+    display: flex;
+
+    button {
+      flex: 1;
+    }
+  }
+}
+
+// The side panel's tabs: one thing at a time, always in reach.
+.panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+
+  button {
+    flex: 1;
+    padding: 6px 4px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--fg);
+    }
+
+    &.is-on {
+      background: var(--surface-2);
+      color: var(--fg);
+      font-weight: 600;
+    }
+  }
+}
+
+// Numbers worth a glance, in tiles.
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+
+  &__value {
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+
+  &__label {
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
+// Notes and sources, out of the way until wanted.
+.fold {
+  > summary {
+    padding: 2px 0;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--fg);
+    }
+  }
+
+  &[open] > summary {
+    margin-bottom: 8px;
+    color: var(--fg);
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+// A menu over the map: opens upward from the bottom of the view.
+.menu {
+  position: relative;
+
+  > summary {
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+
+  &__list {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    min-width: 250px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--surface-2);
+    }
+
+    &:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+  }
+
+  &__state {
+    color: var(--muted);
+    font-size: 12px;
   }
 }

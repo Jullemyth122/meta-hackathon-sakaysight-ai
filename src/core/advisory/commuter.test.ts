@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { TwinRuntime } from '@/app/twinRuntime';
+import { twinState } from '@/app/twinState';
+import { FIELD_SCENARIO } from '../fleet/scenario';
 import { Polyline } from '../geo/polyline';
-import type { Route } from '../geo/routes';
-import { commuterView } from './commuter';
+import { defaultRoute, type Route } from '../geo/routes';
+import { commuterView, riderOf } from './commuter';
 import { dispatch } from './dispatch';
 import type { PassengerState, TwinState, VehicleState } from './model';
 
@@ -58,6 +61,22 @@ function state(p: PassengerState = person): TwinState {
     vehicles: [jeep(0, 950), jeep(1, 800), jeep(2, 600), jeep(3, 0)],
   };
 }
+
+describe('whose ride a picked vehicle shows', () => {
+  it('whoever on board has furthest to go, else the first waiting for it, else nobody', () => {
+    const twin = new TwinRuntime(defaultRoute(), undefined, { ...FIELD_SCENARIO, startHour: 8 });
+    for (let t = 0; t < 900; t++) twin.step(1, 0);
+    const state = twinState(twin);
+    const plan = dispatch(state);
+    const v = state.vehicles.find(
+      (x) => state.passengers.filter((p) => p.vehicle === x.index).length > 2,
+    )!;
+    const id = riderOf(state, plan, v.index);
+    const rider = state.passengers.find((p) => p.id === id)!;
+    expect(rider.vehicle).toBe(v.index);
+    expect(riderOf(state, plan, 9999)).toBeNull();
+  });
+});
 
 describe('personal first-mile pickup', () => {
   it('skips jeepneys arriving before the walker and shows the later catchable one', () => {

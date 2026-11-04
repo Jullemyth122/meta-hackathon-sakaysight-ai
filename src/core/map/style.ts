@@ -83,37 +83,41 @@ export const WATERWAY_WIDTH: Record<string, number> = {
 };
 
 /**
- * Road widths come from typical Philippine lane counts at ~3.3 m per lane plus
- * shoulders. OpenMapTiles has no lane data, but it does say `oneway`: a big
- * road mapped as two one-way lines (Quirino Highway, Commonwealth) is a
- * divided highway, and each line is one carriageway.
+ * Road widths come from typical Metro Manila lane counts at LANE_M a lane.
+ * OpenMapTiles has no lane data, but it does say `oneway`: a big road mapped
+ * as two one-way lines (Quirino Highway, Commonwealth) is a divided highway,
+ * and each line is one carriageway. Vehicles keep to the kerb-side lane, so
+ * the wider the road, the further out they are, as on the real thing.
  */
 export interface RoadStyle {
   /** Two-way road, kerb to kerb, metres. */
   width: number;
-  /** One carriageway of a divided road (major classes only), metres. */
+  /**
+   * One way only, metres: one carriageway of a divided road, or a small
+   * one-way street, narrower than the same street both ways.
+   */
   carriageway?: number;
   fill: Rgb;
   casing: Rgb;
 }
 
-const MAJOR_CASING = hex('#d7a84f');
+const MAJOR_CASING = hex('#c9b388');
 const MINOR_CASING = hex('#cdc6b9');
 const WHITE = hex('#ffffff');
 
 export const ROADS: Record<string, RoadStyle> = {
-  // 3–4 lanes each way (NLEX, Skyway).
-  motorway: { width: 26, carriageway: 14, fill: hex('#f5c766'), casing: MAJOR_CASING },
-  // 3 lanes each way (EDSA-class national roads).
-  trunk: { width: 22, carriageway: 12, fill: hex('#f8d27c'), casing: MAJOR_CASING },
-  // 2–3 lanes each way: Quirino Highway, Regalado Avenue.
-  primary: { width: 18, carriageway: 11, fill: hex('#fbdd90'), casing: MAJOR_CASING },
-  // 2 lanes each way or a wide two-lane road.
-  secondary: { width: 13, carriageway: 8, fill: hex('#fde9b3'), casing: MINOR_CASING },
-  tertiary: { width: 9, fill: WHITE, casing: MINOR_CASING },
+  // 4 lanes each way (NLEX, Skyway).
+  motorway: { width: 28, carriageway: 14, fill: hex('#eedcaa'), casing: MAJOR_CASING },
+  // 6 lanes each way: Commonwealth, EDSA.
+  trunk: { width: 42, carriageway: 21, fill: hex('#f2e2b8'), casing: MAJOR_CASING },
+  // 2 lanes each way, or 3 a side where divided: Quirino Highway, Regalado Avenue.
+  primary: { width: 14, carriageway: 10.5, fill: hex('#f5e8c6'), casing: MAJOR_CASING },
+  // 2 lanes each way: most city roads.
+  secondary: { width: 14, carriageway: 7, fill: hex('#f8f0dc'), casing: MINOR_CASING },
+  tertiary: { width: 8, carriageway: 6, fill: WHITE, casing: MINOR_CASING },
   busway: { width: 8, fill: WHITE, casing: MINOR_CASING },
-  minor: { width: 6.5, fill: WHITE, casing: MINOR_CASING },
-  service: { width: 4, fill: WHITE, casing: MINOR_CASING },
+  minor: { width: 7, carriageway: 5, fill: WHITE, casing: MINOR_CASING },
+  service: { width: 5.5, carriageway: 4.5, fill: WHITE, casing: MINOR_CASING },
   track: { width: 3, fill: hex('#f6f1e6'), casing: MINOR_CASING },
   path: { width: 1.6, fill: hex('#f6f1e6'), casing: MINOR_CASING },
 };
@@ -135,6 +139,40 @@ export const ROAD_ORDER = Object.keys(ROADS).reverse();
 /** Paved width of one road feature, metres. */
 export function roadWidth(style: RoadStyle, oneway: boolean): number {
   return oneway && style.carriageway ? style.carriageway : style.width;
+}
+
+/** One lane, metres: a bus (2.5 m) fits with room either side. */
+export const LANE_M = 3.5;
+/** A lane line's dashes: this long, this far apart, this wide (metres). */
+export const LANE_DASH = { on: 3, off: 6, width: 0.18 };
+export const LANE_LINE = hex('#ffffff');
+/** Smaller streets' lines, grey on their white surface. */
+export const STREET_LINE = hex('#b9bdc6');
+/** Road classes with painted lines: none on the smallest streets. */
+const MARKED = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
+
+/**
+ * The lines painted on a road of `width`, as offsets from its middle (right
+ * positive): dashes between lanes, and a solid line down the middle of a
+ * two-way road. Only roads with marked lanes (a `carriageway` class).
+ */
+export function laneLines(cls: string, oneway: boolean): Array<{ offset: number; solid: boolean }> {
+  const style = ROADS[cls];
+  if (!style || !MARKED.has(cls)) return [];
+  const width = roadWidth(style, oneway);
+  const lines: Array<{ offset: number; solid: boolean }> = [];
+  if (oneway) {
+    // A small one-way street, two tight lanes at most: no line down it.
+    const lanes = Math.floor(width / LANE_M);
+    for (let k = 1; k < lanes; k++) lines.push({ offset: -width / 2 + k * LANE_M, solid: false });
+    return lines;
+  }
+  // Two ways: the line down the middle is what says so.
+  lines.push({ offset: 0, solid: true });
+  const each = Math.floor(width / 2 / LANE_M);
+  for (let k = 1; k < each; k++)
+    for (const side of [-1, 1]) lines.push({ offset: side * k * LANE_M, solid: false });
+  return lines;
 }
 
 /** `class` values for roads; `_construction` and `_ramp` variants map to these. */
@@ -181,3 +219,41 @@ export const DEFAULT_BUILDING_HEIGHT_M = 6;
 
 /** Place labels shown on the map, by OpenMapTiles `place` class. */
 export const LABEL_PLACES = new Set(['city', 'town', 'suburb', 'quarter', 'village']);
+
+/** Street names: a main road's from further off than a side street's (OpenMapTiles class). */
+export const ROAD_LABELS: Readonly<Record<string, 'road' | 'street'>> = {
+  motorway: 'road',
+  trunk: 'road',
+  primary: 'road',
+  secondary: 'road',
+  tertiary: 'street',
+  minor: 'street',
+};
+
+/** Fast-food chains everyone gives directions by ("sa tapat ng Jollibee"). */
+const DIRECTION_CHAINS = /jollibee|mcdonald|mang inasal|chowking|greenwich|kfc|andok/i;
+
+/**
+ * Landmarks named on the map, by OpenMapTiles `poi` class and subclass: what
+ * people give directions by (a mall or market, a church, a school, a hospital,
+ * the barangay hall, a tricycle terminal), and stations. Null: not named.
+ */
+export function landmarkKind(
+  cls: string,
+  subclass: string,
+  name: string,
+): 'landmark' | 'station' | null {
+  if (cls === 'railway') return 'station';
+  if (cls === 'grocery' || cls === 'shop')
+    return ['mall', 'department_store', 'marketplace', 'supermarket'].includes(subclass)
+      ? 'landmark'
+      : null;
+  if (['college', 'school', 'university', 'place_of_worship', 'town_hall', 'police'].includes(cls))
+    return 'landmark';
+  if (cls === 'hospital') return subclass === 'hospital' ? 'landmark' : null;
+  // A tricycle (TODA) or jeepney terminal, and the barangay hall.
+  if (cls === 'office') return subclass === 'taxi' || subclass === 'government' ? 'landmark' : null;
+  if (cls === 'bus') return subclass === 'bus_station' ? 'landmark' : null;
+  if (cls === 'fast_food') return DIRECTION_CHAINS.test(name) ? 'landmark' : null;
+  return null;
+}

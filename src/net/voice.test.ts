@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_KEYWORD_CHARS, voiceKeywords } from '@/core/advisory/screen';
+import { FOLLOW_UP_MS, wakeListener } from './voice';
 import { defaultRoute } from '@/core/geo/routes';
 import {
   addressed,
@@ -49,7 +50,48 @@ describe('when a spoken question is over', () => {
   });
 });
 
+describe('hands-free', () => {
+  it('takes the question in one breath', () => {
+    const sort = wakeListener();
+    expect(sort('Hey Sakay, next stop?', 0)).toEqual({ heard: 'asked', question: 'next stop?' });
+  });
+
+  it('takes it after a pause, once', () => {
+    const sort = wakeListener();
+    expect(sort('Hey Sakay', 0)).toEqual({ heard: 'woken', question: null });
+    expect(sort(' magkano ang pamasahe ', 2000)).toEqual({
+      heard: 'asked',
+      question: 'magkano ang pamasahe',
+    });
+    expect(sort('kuya bayad po', 2500).heard).toBe('ignored');
+  });
+
+  it('stops waiting after a while', () => {
+    const sort = wakeListener();
+    sort('Hey Sakay', 0);
+    expect(sort('magkano', FOLLOW_UP_MS + 1).heard).toBe('ignored');
+  });
+
+  it('ignores what is not said to it', () => {
+    const sort = wakeListener();
+    expect(sort('hoy sakay na, sakay na', 0).heard).toBe('ignored');
+    expect(sort('bayad po', 100).question).toBeNull();
+  });
+
+  it('hears the name however the browser spells it', () => {
+    expect(wakeListener()('Hey Sakai, next stop', 0).question).toBe('next stop');
+  });
+});
+
 describe('words to listen for', () => {
+  it('keeps the commute words when a long route has more stops than the limit', () => {
+    const route = {
+      ...defaultRoute(),
+      stops: Array.from({ length: 120 }, (_, i) => ({ name: `Stop ${i}`, s: i })),
+    };
+    expect(voiceKeywords(route).slice(0, 50)).toContain('pamasahe');
+  });
+
   it('fits Meta’s 30-character keyword limit and keeps how stops are said', () => {
     const words = voiceKeywords(defaultRoute());
     expect(words.every((w) => w.length > 0 && w.length <= MAX_KEYWORD_CHARS)).toBe(true);
@@ -136,21 +178,22 @@ describe('WAV for transcription', () => {
 
 describe('wake phrase', () => {
   it('passes on only what is asked of the assistant', () => {
-    expect(addressed('Hey Commute, how many are waiting at Lagro?')).toBe(
+    expect(addressed('Hey Sakay, how many are waiting at Lagro?')).toBe(
       'how many are waiting at Lagro?',
     );
-    expect(addressed('hey, commute! next stop')).toBe('next stop');
-    expect(addressed('  Commute AI should I stop at Regalado')).toBe('should I stop at Regalado');
+    expect(addressed('hey, sakay! next stop')).toBe('next stop');
+    expect(addressed('  Sakay Sight should I stop at Regalado')).toBe('should I stop at Regalado');
   });
 
   it('ignores everything else said in the cab', () => {
     expect(addressed('para po')).toBeNull();
     expect(addressed('bayad po, dalawa')).toBeNull();
-    expect(addressed('I told him hey commute is useful')).toBeNull();
-    expect(addressed('hey commuters')).toBeNull();
+    expect(addressed('I told him hey sakay is useful')).toBeNull();
+    expect(addressed('hoy sakay na, sakay na')).toBeNull();
+    expect(addressed('hey sakayan')).toBeNull();
   });
 
   it('ignores the wake phrase alone', () => {
-    expect(addressed('Hey Commute.')).toBeNull();
+    expect(addressed('Hey Sakay.')).toBeNull();
   });
 });

@@ -8,10 +8,13 @@ import { useEffect, useState } from 'react';
 import { flowOf, getNetwork, routeIndex } from '@/app/network';
 import { useRuntimes } from '@/app/runtimeContext';
 import { useApp } from '@/app/store';
-import { RouteSearch } from './RouteSearch';
+import { Fold } from '../Tabs';
 
 /** How often the network-wide totals are worked out again (real time). */
 const TOTALS_EVERY_MS = 5_000;
+
+/** Tens of thousands of vehicles: every this-many-th stands for the rest in the totals. */
+const SAMPLE_EVERY = 4;
 
 /** Network-wide totals at clock t: cheap enough every few seconds (flows are formulas). */
 function totals(t: number) {
@@ -24,11 +27,12 @@ function totals(t: number) {
   network.routes.forEach((_, i) => {
     const flow = flowOf(i);
     jeepneys += flow.count;
-    for (const v of flow.vehicles(t)) {
+    for (let k = i % SAMPLE_EVERY; k < flow.count; k += SAMPLE_EVERY) {
+      const v = flow.vehicle(k, t);
       if (!v.inService) continue;
-      out++;
-      riders += v.occupancy;
-      seats += v.capacity;
+      out += SAMPLE_EVERY;
+      riders += v.occupancy * SAMPLE_EVERY;
+      seats += v.capacity * SAMPLE_EVERY;
     }
   });
   return {
@@ -71,61 +75,66 @@ export function NetworkSection() {
 
   return (
     <section className="section">
-      <h3 className="section__title">Metro Manila network</h3>
-      {status.state === 'loading' && <p className="fine">Loading the jeepney network…</p>}
+      <h3 className="section__title">All of Metro Manila</h3>
+      {status.state === 'loading' && <p className="fine">Loading the network…</p>}
       {status.state === 'error' && <p className="error">Network not loaded: {status.message}</p>}
       {sum && (
         <>
-          {meta && (
+          <div className="stats">
+            <div className="stat">
+              <span className="stat__value">{sum.routes.toLocaleString()}</span>
+              <span className="stat__label">Routes</span>
+            </div>
+            <div className="stat">
+              <span className="stat__value">{sum.out.toLocaleString()}</span>
+              <span className="stat__label">Vehicles out now</span>
+            </div>
+            <div className="stat">
+              <span className="stat__value">~{sum.riders.toLocaleString()}</span>
+              <span className="stat__label">Riders on board</span>
+            </div>
+            <div className="stat">
+              <span className="stat__value">{sum.seatsPct}%</span>
+              <span className="stat__label">Full</span>
+            </div>
+          </div>
+          <Fold title="About these numbers">
             <div className="kv">
-              <span>This route</span>
-              <span>
-                <strong>{twin.route.name}</strong>
-              </span>
-              <span>Its jeepneys</span>
+              {meta && (
+                <>
+                  <span>This route</span>
+                  <span className="mono">
+                    {out.length === 0
+                      ? 'none out at this hour'
+                      : `one about every ${passEveryMin.toFixed(1)} min`}
+                  </span>
+                </>
+              )}
+              <span>Routes in the GTFS feed</span>
+              <span className="mono">{sum.inFeed.toLocaleString()}</span>
+              <span>Vehicles, all routes</span>
               <span className="mono">
-                {twin.fleet.vehicles.length} ·{' '}
-                {out.length === 0
-                  ? 'none out at this hour'
-                  : `${out.length} out now, one about every ${passEveryMin.toFixed(1)} min`}
+                ~{sum.jeepneys.toLocaleString()} (about{' '}
+                {Math.round(sum.jeepneys / Math.max(1, sum.routes))} a route)
+              </span>
+              <span>As of</span>
+              <span className="mono">
+                {String(hour).padStart(2, '0')}:{String(minute).padStart(2, '0')}
               </span>
             </div>
-          )}
-          <p className="fine">
-            Simulated in full, jeepney by jeepney: the numbers you set below. The rest of the map,
-            estimated:
-          </p>
-          <div className="kv">
-            <span>All routes on the map</span>
-            <span className="mono">
-              {sum.routes.toLocaleString()} (of {sum.inFeed.toLocaleString()} in the GTFS feed)
-            </span>
-            <span>Their jeepneys, together</span>
-            <span className="mono">
-              ~{sum.jeepneys.toLocaleString()} (about{' '}
-              {Math.round(sum.jeepneys / Math.max(1, sum.routes))} a route) ·{' '}
-              {sum.out.toLocaleString()} out now
-            </span>
-            <span>On board now, all routes</span>
-            <span className="mono">
-              ~{sum.riders.toLocaleString()} riders · {sum.seatsPct}% of seats
-            </span>
-            <span>As of</span>
-            <span className="mono">
-              {String(hour).padStart(2, '0')}:{String(minute).padStart(2, '0')}
-            </span>
-          </div>
-          <p className="fine">
-            Every other route runs as an estimated flow (sized from the GTFS feed’s one jeepney a
-            minute, not from LTFRB counts, which are not published). Click any jeepney on the map to
-            simulate its route in full instead.
-          </p>
-          <RouteSearch />
-          <p className="fine">
-            Routes and stops: DOTC Philippine Transit GTFS (2015), via Sakay.ph; road paths by OSRM
-            on OpenStreetMap. Only routes whose road path fits their 2015 stops are shown; routes
-            may have changed since. Not affiliated with or endorsed by DOTC.
-          </p>
+            <p className="fine">
+              The route you picked is simulated vehicle by vehicle; the rest are estimates. Metro
+              Manila’s fleet (LTFRB: about 42,000 jeepneys, 6,000 UV Express, 4,100 buses) is shared
+              among these routes by each city’s population density (2024 census) and each road’s
+              size, with less in car-heavy areas like Makati. Those weights are assumptions: no
+              route-by-route count is published. Click any vehicle to simulate its route in full.
+            </p>
+            <p className="fine">
+              Routes and stops: DOTC Philippine Transit GTFS (2015), via Sakay.ph; road paths by
+              OSRM on OpenStreetMap. Only routes whose road path fits their 2015 stops are shown;
+              routes may have changed since. Not affiliated with or endorsed by DOTC.
+            </p>
+          </Fold>
         </>
       )}
     </section>

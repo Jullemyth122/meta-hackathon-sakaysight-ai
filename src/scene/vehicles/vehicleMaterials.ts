@@ -4,17 +4,20 @@
  * route sign. One material per kind and slot, cached.
  */
 
-import { MeshStandardMaterial } from 'three';
+import { MeshStandardMaterial, type BufferGeometry } from 'three';
 import type { VehicleKind } from '@/core/vehicles/specs';
-import { PALETTE } from '../jeepney/materials';
-import type { Slot } from './bodyKit';
+import { bakeColours, bakedColour } from '../jeepney/geometryKit';
+import { bakedMaterial, PALETTE } from '../jeepney/materials';
+import type { Slot, VehicleParts } from './bodyKit';
 
-const LIVERY: Record<VehicleKind, { stripe: string; stripe2: string; seat: string; tint: string }> =
-  {
-    bus: { stripe: '#1f4fb8', stripe2: '#d6453d', seat: '#34477a', tint: '#1d2a36' },
-    modern: { stripe: '#138a72', stripe2: '#efbe2c', seat: '#5c636b', tint: '#22323e' },
-    uv: { stripe: '#202327', stripe2: '#c8282c', seat: '#3b3f45', tint: '#161c22' },
-  };
+export const LIVERY: Record<
+  VehicleKind,
+  { stripe: string; stripe2: string; seat: string; tint: string }
+> = {
+  bus: { stripe: '#1f4fb8', stripe2: '#d6453d', seat: '#34477a', tint: '#1d2a36' },
+  modern: { stripe: '#138a72', stripe2: '#efbe2c', seat: '#5c636b', tint: '#22323e' },
+  uv: { stripe: '#202327', stripe2: '#c8282c', seat: '#3b3f45', tint: '#161c22' },
+};
 
 const cache = new Map<string, MeshStandardMaterial>();
 
@@ -80,4 +83,35 @@ export function vehicleMaterial(kind: VehicleKind, slot: Slot): MeshStandardMate
   }
   cache.set(key, m);
   return m;
+}
+
+/** A set of parts as drawn: all it can in one baked mesh, its glass (see-through) in another. */
+export interface DrawnPart {
+  /** 'body' or 'glass'. */
+  slot: 'body' | 'glass';
+  geometry: BufferGeometry;
+  material: MeshStandardMaterial;
+}
+
+const baked = new WeakMap<VehicleParts, DrawnPart[]>();
+
+export function drawnParts(kind: VehicleKind, parts: VehicleParts): DrawnPart[] {
+  let drawn = baked.get(parts);
+  if (drawn) return drawn;
+  const solid = (Object.entries(parts) as [Slot, BufferGeometry][]).filter(([s]) => s !== 'glass');
+  drawn = [];
+  if (solid.length > 0)
+    drawn.push({
+      slot: 'body',
+      geometry: bakeColours(solid.map(([s, g]) => [g, bakedColour(vehicleMaterial(kind, s))])),
+      material: bakedMaterial(),
+    });
+  if (parts.glass)
+    drawn.push({
+      slot: 'glass',
+      geometry: parts.glass,
+      material: vehicleMaterial(kind, 'glass'),
+    });
+  baked.set(parts, drawn);
+  return drawn;
 }

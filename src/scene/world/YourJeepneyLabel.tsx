@@ -9,6 +9,7 @@
  */
 
 import { useFrame, useThree } from '@react-three/fiber';
+import { behindCamera } from './Labels';
 import { useEffect, useMemo, useRef } from 'react';
 import { Vector3 } from 'three';
 import type { TwinRuntime } from '@/app/twinRuntime';
@@ -67,8 +68,10 @@ export function YourJeepneyLabel({ twin }: { twin: TwinRuntime }) {
       return;
     }
     fleetPose(twin.fleet, t.vehicle, pose);
-    v.set(pose.x, LABEL_Y, pose.z).project(camera);
-    const off = v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
+    v.set(pose.x, LABEL_Y, pose.z);
+    const behind = behindCamera(camera, v);
+    v.project(camera);
+    const off = behind || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
     el.hidden = off;
     if (off) return;
     const px = (v.x * 0.5 + 0.5) * size.width;

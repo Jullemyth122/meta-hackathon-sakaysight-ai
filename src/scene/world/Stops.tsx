@@ -8,6 +8,7 @@ import { BufferAttribute, BufferGeometry, Matrix4, type Mesh } from 'three';
 import { useApp } from '@/app/store';
 import type { FleetSim } from '@/core/fleet/fleetSim';
 import type { LocalPoint } from '@/core/geo/projection';
+import { kindOf } from '@/core/people/passengerSystem';
 import { newRiderPose } from '@/core/people/riderMotion';
 import { areaCentre, stopAreaQuads } from '@/core/people/stopLayout';
 import type { CrewState } from '../jeepney/crewState';
@@ -60,6 +61,8 @@ export function Stops({ fleet, crew }: { fleet: FleetSim; crew: CrewState }) {
   const marker = useRef<Mesh>(null);
   const tracked = useApp((s) => s.trackedRiderId);
   const inside = useApp((s) => s.follow?.view === 'inside');
+  // A commuter on a trip is told where to board and get off: not every stop.
+  const onTrip = useApp((s) => s.view === 'commuter' && !!(s.tripPreview ?? s.tripLegs));
   const [capacity, setCapacity] = useState(512);
   const scratch = useMemo(
     () => ({
@@ -147,6 +150,7 @@ export function Stops({ fleet, crew }: { fleet: FleetSim; crew: CrewState }) {
         seed,
         look,
         crew.visibility(r),
+        kindOf(r) === 'pregnant',
       );
     });
     crowd.end();
@@ -163,7 +167,7 @@ export function Stops({ fleet, crew }: { fleet: FleetSim; crew: CrewState }) {
       <mesh geometry={areaGeometry} receiveShadow>
         <meshStandardMaterial color={AREA_COLOUR} roughness={0.9} />
       </mesh>
-      <Labels labels={labels} hidden={inside} />
+      <Labels labels={labels} hidden={inside || onTrip} />
       <PeopleInstances ref={people} capacity={capacity} fading />
       <TricycleInstances ref={tricycles} capacity={TRICYCLES} />
       <mesh ref={marker} rotation-x={-Math.PI / 2} visible={false}>

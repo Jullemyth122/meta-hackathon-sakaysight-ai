@@ -97,6 +97,11 @@ export function wheelMaterial(part: 'tire' | 'hub'): MeshStandardMaterial {
   );
 }
 
+/** For parts with their colours baked in (geometryKit.bakeColours). */
+export function bakedMaterial(): MeshStandardMaterial {
+  return make('baked', () => new MeshStandardMaterial({ vertexColors: true, roughness: 0.5 }));
+}
+
 const scratch = new Color();
 export function liveryColor(livery: Livery, slot: PartSlot): Color {
   const key = slot as 'accent' | 'accent2' | 'sign';
