@@ -145,6 +145,7 @@ function PlanAsk({ stop, destination }: { stop: number; destination: number }) {
     <section className="section">
       <h3 className="section__title">Ask Sakay</h3>
       <AskBox
+        fab
         suggestions={PLANNING_QUESTIONS}
         keywords={voiceKeywords(twin.route)}
         agent={{ role: 'commuter', screen: () => undefined, run: commuterTools(twin) }}
@@ -541,6 +542,7 @@ export function CommuterPanel() {
           <section className="section">
             <h3 className="section__title">Ask</h3>
             <AskBox
+              fab
               suggestions={SUGGESTIONS}
               keywords={voiceKeywords(twin.route)}
               agent={{

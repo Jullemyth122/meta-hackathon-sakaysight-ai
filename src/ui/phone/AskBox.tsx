@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp } from '@/app/store';
 import type { PlannerRequest } from '@/core/advisory/plannerSnapshot';
 import { askAgent, photoForMuse, phrase, type AgentContext, type AgentMessage } from '@/net/agent';
@@ -62,12 +63,40 @@ const HOLD_MS = 350;
 /** Must match SILENCE_S in net/voice.ts: for the "sending in…" countdown. */
 const SEND_AFTER_QUIET_S = 2.5;
 const VOICE_KEY = 'sakaysightai.voice';
+/** How the big mic works in voice mode, remembered on this device. */
+const MIC_MODE_KEY = 'sakaysightai.micMode';
 /** The last line from a demo scene taken up, by whichever Ask box was showing. */
 let tookDemoAsk = 0;
 
-function MicIcon() {
+/**
+ * The mic's way of working. `tap`: tap, talk, tap again (or stop talking) to
+ * send. `hold`: talk while holding it, let go to send. `auto` (the small mic):
+ * a quick tap is `tap`, a press held is `hold`.
+ */
+type MicMode = 'auto' | 'tap' | 'hold';
+
+function useMicMode(): [Exclude<MicMode, 'auto'>, (m: Exclude<MicMode, 'auto'>) => void] {
+  const [mode, setMode] = useState<Exclude<MicMode, 'auto'>>(() => {
+    try {
+      return localStorage.getItem(MIC_MODE_KEY) === 'hold' ? 'hold' : 'tap';
+    } catch {
+      return 'tap';
+    }
+  });
+  const pick = (m: Exclude<MicMode, 'auto'>) => {
+    setMode(m);
+    try {
+      localStorage.setItem(MIC_MODE_KEY, m);
+    } catch {
+      // Private mode: the choice lasts until the page closes.
+    }
+  };
+  return [mode, pick];
+}
+
+function MicIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
       <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" />
       <path
         d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"
@@ -121,6 +150,7 @@ export function AskBox({
   keywords = [],
   handsFree = false,
   agent,
+  fab = false,
 }: {
   suggestions: string[];
   /** Built when asked, so it carries the numbers of that moment. */
@@ -131,6 +161,11 @@ export function AskBox({
   handsFree?: boolean;
   /** Let Muse look things up and act (the Sakay Agent); else it explains the app's numbers. */
   agent?: AgentContext;
+  /**
+   * On a phone, a round mic floating at the bottom of the screen opens voice
+   * mode from any tab (this Ask box may be on a tab not showing).
+   */
+  fab?: boolean;
 }) {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<AssistAnswer | null>(null);
@@ -149,6 +184,9 @@ export function AskBox({
   const questionHistory = useRef<string[]>([]);
   const memory = useRef<AgentMessage[]>([]);
   const [photo, setPhoto] = useState<string | null>(null);
+  // Voice mode: the mic big, over the whole screen (a phone, or a driver's glance).
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [micMode, setMicMode] = useMicMode();
   // The photo seen full size, tapped on; closed by a tap anywhere or Escape.
   const [photoOpen, setPhotoOpen] = useState(false);
   useEffect(() => {
@@ -247,10 +285,10 @@ export function AskBox({
     }
   };
 
-  async function pressMic() {
+  async function pressMic(mode: MicMode = 'auto') {
     pressedAt.current = performance.now();
     holding.current = true;
-    if (mic === 'recording') return void send.current(); // second tap: send now
+    if (mic === 'recording' && mode !== 'hold') return void send.current(); // second tap: send now
     if (mic !== 'idle') return;
     setError(null);
     speech.stop();
@@ -267,14 +305,37 @@ export function AskBox({
     }
   }
 
-  function releaseMic() {
-    const held = performance.now() - pressedAt.current >= HOLD_MS;
+  function releaseMic(mode: MicMode = 'auto') {
+    const held =
+      mode === 'hold' || (mode === 'auto' && performance.now() - pressedAt.current >= HOLD_MS);
     holding.current = false;
     if (!recording.current) return;
-    // Held down: letting go sends. A quick tap leaves it listening.
+    // Held down: letting go sends. A tap leaves it listening.
     if (held) void send.current();
     else setMic('recording');
   }
+
+  /** Stop the mic without sending: nothing said reaches Muse. */
+  function cancelMic() {
+    const rec = recording.current;
+    recording.current = null;
+    holding.current = false;
+    rec?.cancel();
+    setMic('idle');
+    setLevel(0);
+    setQuiet(0);
+  }
+
+  function closeVoice() {
+    if (mic === 'recording' || mic === 'holding') cancelMic();
+    setVoiceOpen(false);
+  }
+  useEffect(() => {
+    if (!voiceOpen) return;
+    const close = (e: KeyboardEvent) => e.key === 'Escape' && closeVoice();
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  });
 
   // Level meter and quiet countdown while recording; drop any recording if the panel closes.
   useEffect(() => {
@@ -329,9 +390,138 @@ export function AskBox({
         : mic === 'transcribing'
           ? 'Turning your voice into text…'
           : null;
+  const voiceStatus =
+    mic === 'holding'
+      ? 'Listening… let go to send.'
+      : mic === 'recording'
+        ? quiet >= 0.8
+          ? `Sending in ${Math.max(0, SEND_AFTER_QUIET_S - quiet).toFixed(1)} s… keep talking, or tap to send now.`
+          : 'Listening… tap the mic to send.'
+        : mic === 'transcribing'
+          ? 'Turning your voice into text…'
+          : busy
+            ? 'Muse is thinking…'
+            : micMode === 'hold'
+              ? 'Hold the mic while you talk. Let go to send.'
+              : 'Tap the mic and talk. Tap again to send, or just stop talking.';
+  const live = mic === 'recording' || mic === 'holding';
 
   return (
     <div className="ask">
+      {micSupported() && (
+        <button type="button" className="btn ask__talk" onClick={() => setVoiceOpen(true)}>
+          <MicIcon size={22} />
+          Talk to Muse
+        </button>
+      )}
+      {fab &&
+        micSupported() &&
+        !voiceOpen &&
+        createPortal(
+          <button
+            type="button"
+            className="ask__fab"
+            aria-label="Talk to Muse"
+            title="Talk to Muse"
+            onClick={() => setVoiceOpen(true)}
+          >
+            <MicIcon size={28} />
+          </button>,
+          document.body,
+        )}
+      {voiceOpen &&
+        createPortal(
+          <div
+            className="voice-mode"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Ask Muse by voice"
+          >
+            <div className="voice-mode__top">
+              <div className="voice-mode__modes" role="radiogroup" aria-label="How the mic works">
+                {(['tap', 'hold'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="radio"
+                    aria-checked={micMode === m}
+                    className={`chip voice-mode__mode${micMode === m ? ' voice-mode__mode--on' : ''}`}
+                    disabled={mic !== 'idle'}
+                    onClick={() => setMicMode(m)}
+                  >
+                    {m === 'tap' ? 'Tap to talk' : 'Hold to talk'}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="btn voice-mode__close" onClick={closeVoice}>
+                ✕ Close
+              </button>
+            </div>
+            <div className="voice-mode__centre">
+              <button
+                type="button"
+                className={`voice-mode__mic voice-mode__mic--${mic}`}
+                onPointerDown={(e) => {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  void pressMic(micMode);
+                }}
+                onPointerUp={() => releaseMic(micMode)}
+                onPointerCancel={() => releaseMic(micMode)}
+                onContextMenu={(e) => e.preventDefault()}
+                disabled={busy || mic === 'transcribing'}
+                aria-pressed={live}
+                aria-label={live ? 'Send' : micMode === 'hold' ? 'Hold to talk' : 'Tap to talk'}
+                style={{ ['--level' as string]: level }}
+              >
+                <MicIcon size={72} />
+              </button>
+              <p className="voice-mode__status" role="status">
+                {voiceStatus}
+              </p>
+              {live && (
+                <button type="button" className="btn" onClick={cancelMic}>
+                  ■ Stop, don’t send
+                </button>
+              )}
+            </div>
+            <div className="voice-mode__talk">
+              {question && <p className="voice-mode__you">You: “{question}”</p>}
+              {answer && !busy && (
+                <>
+                  <p className="voice-mode__answer">{answer.text}</p>
+                  <div className="ask__speech">
+                    {spoken === 'idle' ? (
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => speech.speak(answer.text, voice)}
+                      >
+                        ▶ Read aloud
+                      </button>
+                    ) : (
+                      <button type="button" className="chip" onClick={() => speech.stop()}>
+                        ■ Stop reading
+                      </button>
+                    )}
+                  </div>
+                  <p className="fine">{costLine(answer)}</p>
+                </>
+              )}
+              {error && <p className="error">{error}</p>}
+              {handsFree && voiceSupported() && (
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={listening}
+                    onChange={(e) => setListening(e.target.checked)}
+                  />
+                  <span>Hands-free: say “Hey Sakay, …”. Nothing else said is sent.</span>
+                </label>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
       <div className="row">
         {suggestions.map((s) => (
           <button
@@ -361,8 +551,8 @@ export function AskBox({
                 e.currentTarget.setPointerCapture(e.pointerId);
                 void pressMic();
               }}
-              onPointerUp={releaseMic}
-              onPointerCancel={releaseMic}
+              onPointerUp={() => releaseMic()}
+              onPointerCancel={() => releaseMic()}
               onContextMenu={(e) => e.preventDefault()}
               disabled={busy || mic === 'transcribing'}
               aria-pressed={mic === 'recording' || mic === 'holding'}
