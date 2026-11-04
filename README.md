@@ -24,23 +24,27 @@ All of it runs on human knowledge (barkers, *pakiusog*, *sabit*, passing riders 
 Muse Wonder (`muse-wonder-1.0`, through the Meta Model API) is an agent, not a chatbot:
 
 - **It acts.** Each question comes with what that driver or commuter can see. Muse chains about twenty tools the app runs ([`core/agent`](./src/core/agent), [`agentTools.ts`](./src/app/agentTools.ts)), and the app carries out the decision.
-- **It sees and listens.** It reads a photo of a signboard. Meta's `muse-voice-transcribe-1.0` turns a driver's spoken question into text, so they never look at the screen.
+- **It sees and listens.** It reads a photo of a signboard, or of the fare matrix posted inside a vehicle. Meta's `muse-voice-transcribe-1.0` turns a driver's spoken question into text, so they never look at the screen.
+- **Drivers' agents don't fight over riders.** Two drivers who ask at once share one **fleet board** ([`core/fleet/board.ts`](./src/core/fleet/board.ts)): the riders the first one's best way picks up are held for them for a minute while they hear Muse out, so the next driver's Muse sends them another way (no *agawan*). The board settles it in the order they asked, with no extra AI calls, so it costs the driver nothing. On the road it would live where the phones already share their places.
+- **It keeps up with fare orders.** A photo of a new fare matrix: Muse reads every row, the app checks each one against one fare rule ([`core/fareMatrix.ts`](./src/core/fareMatrix.ts)) and only then uses it for every fare in the app. A commuter can photograph the same matrix to check what they were charged.
 - **It speaks up first.** With **Automatic AI** on, Muse warns a driver about the road ahead, or wakes a commuter before their stop, without being asked.
 - **It can't make numbers up.** Fares, diesel, seats and minutes come from the tools; an answer with a number Muse wasn't given is thrown away.
 
-## 29 demo scenes, live
+## 32 demo scenes, live
 
 Open **Demo scenes** in the Driver or Commuter tab. A scene rebuilds the twin at that moment, with its vehicles, riders and diesel, and puts the question in the Ask box. Muse answers live, from its tools. ★ marks the ten in the video.
 
-### For drivers (18)
+### For drivers (20)
 
 | Scene | The moment | What Muse does |
 | --- | --- | --- |
 | ★ **Which way pays?** | Jammed past Sampaguita: 6 students by the road, 8 riders on a side street | Draws the main road and two side streets with fares, diesel and minutes on each, and drives the one that pays: about ₱107 net against ₱42 straight on. Public streets only: gated subdivisions are closed. |
 | ★ **Spread the fleet** | The same jam, three jeepneys | First come, first served: riders and streets another jeepney already has are theirs, so Muse sends this one round another street that still pays. |
 | ★ **Rush hour on España** | Manila, 5:40 PM by UST; the jeepney ahead on the Sampaloc shortcut has seats for 8 of the 11 | Sends this one for the 3 who would be left behind. |
+| **Two drivers ask at once** | The same jam, two jeepneys side by side, both drivers asking | NVG 3318 asked a few seconds first, so the 8 on its side street are held for it on the fleet board; Muse sends this one round the other street (+₱38), and each takes its own. No *agawan*. |
 | ★ **Riders running late** | Pulled in at Sampaguita, people 1–3 minutes away | Holds at the stop for those who make it within 2 minutes, then goes. |
 | ★ **Pass riders on, go back** | 3 riders left; 8 stranded across the road with no jeepney coming | Hands the 3 to the jeepney behind at Amparo and U-turns for the 8. |
+| **New fare matrix from a photo** | A new fare order (a sample: ₱15 for 4 km, then ₱2.20) | Reads the matrix, checks every row, uses it for every fare, and says what it adds in a day: about ₱250 for 250 riders. |
 | **Diesel plan, Fairview to Quiapo** | A quarter of a tank, 3 rounds left | Skips the Shell and Petron ahead for the Flying V, ₱5 a litre cheaper, for only the litres needed. The jeepney turns in there. |
 | **Jam ahead, a way round?** | Crawling on a packed road | Takes the street alongside, back on the route before Mountain View. |
 | **Not enough seats** | 9 waiting, 2 seats left | Says how many it cannot take. |
@@ -55,7 +59,7 @@ Open **Demo scenes** in the Driver or Commuter tab. A scene rebuilds the twin at
 | **A bus keeps to its stops** | Someone waves by the road | A bus does not pull over, unlike a jeepney. |
 | **A bus waits one minute** | 3 people running for it | A bus holds up the lane, so it waits 1 minute, not 2: the 2 who make it board. |
 
-### For commuters (11)
+### For commuters (12)
 
 Each card in the app says who it is for (new to the city, or *sanay na*, daily riders) and why it helps.
 
@@ -66,6 +70,7 @@ Each card in the app says who it is for (new to the city, or *sanay na*, daily r
 | ★ **The jeep comes to my street** (Sampaloc) | Sanay na, living off the main road | Four neighbours wait on their own street for a jeepney going round the jam: no tricycle, ₱80 kept. |
 | ★ **I missed my modern jeepney** | Sanay na, whose ride just left | Plans again from where you stand, with the next ride by the clock. |
 | ★ **Wake me at my stop** | Sanay na, tired on the long ride home | Wakes you a few minutes before your stop, unasked. |
+| **Was I charged right?** | Students, seniors and PWD, new or *sanay na* | A photo of the matrix inside: a student charged ₱20 for 6.4 km should pay ₱16, overcharged by ₱4. |
 | **Will the bus have a seat?** | Seniors, parents with a child, anyone with bags | Skip the packed bus: the next one has a seat. |
 | **Long queue for a modern jeepney** | The rush-hour line at a terminal | Counts the 14 ahead against seats and standing room: wait, or go another way. |
 | **A roomy jeep for a buntis** | Pregnant riders, PWD, seniors | Take the next one, with room to sit, and tells the driver. |
@@ -91,7 +96,7 @@ The software includes browser GPS tracking, planning logic and Meta API integrat
 
 ## What Meta AI adds
 
-**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the 29 listed [above](#29-demo-scenes-live). Only the setting is staged; Muse answers from its tools as anywhere else.
+**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the 32 listed [above](#32-demo-scenes-live). Only the setting is staged; Muse answers from its tools as anywhere else.
 
 Ask about the situation in your own words. Meta transcription handles recorded questions. **The Sakay Agent** is Muse with tools ([`api/agent.ts`](./api/agent.ts), [`core/agent`](./src/core/agent)): it decides what to look up and acts on the app, while every number comes from the simulation.
 
@@ -149,11 +154,11 @@ We welcome collaboration with drivers, cooperatives, operators and hardware part
 
 ## Hackathon disclosure
 
-- **Built during the hackathon (October 27 – November 4, 2026):** the SakaySightAI transport app: OpenStreetMap mapping, the fleet and rider simulation, the driver and commuter apps, the Muse agent and its tools, the 29 demo scenes, phone tracking, and the sensor and profit labs. Dates and details: [Notes.md](./Notes.md#hackathon-contribution-provenance-and-ai-role).
+- **Built during the hackathon (October 27 – November 4, 2026):** the SakaySightAI transport app: OpenStreetMap mapping, the fleet and rider simulation, the driver and commuter apps, the Muse agent and its tools, the fleet board, fare matrices from a photo, the 32 demo scenes, phone tracking, and the sensor and profit labs. Dates and details: [Notes.md](./Notes.md#hackathon-contribution-provenance-and-ai-role).
 - **Reused:** a 3D foundation from the author's earlier code. It is not claimed as hackathon work.
 - **Open source and data:** the libraries in [`package.json`](./package.json), used under their licences; map data © OpenStreetMap contributors (ODbL), served by OpenFreeMap; routes from the 2015 DOTC data; LTFRB fares and DOE diesel prices.
 - **Coding help:** AI coding assistants were used while building. The idea, the design, the decisions and the submission are the author's.
-- **Demo video:** recorded from the running app, with Muse's live answers. Voice-over by ElevenLabs (`eleven_v4`). The signboards in the Read this signboard scenes are drawn pictures, not photos.
+- **Demo video:** recorded from the running app, with Muse's live answers. Voice-over by ElevenLabs (`eleven_v4`). The signboards in the Read this signboard scenes and the fare matrices in the fare scenes are drawn pictures, not photos; the new fare (₱15, then ₱2.20 a km) is a sample, not an LTFRB order.
 - **Simulated:** riders, traffic, tank levels and earnings. No field pilot has been run yet.
 
 <details>

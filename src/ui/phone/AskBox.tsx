@@ -373,8 +373,15 @@ export function AskBox({
               <MicIcon />
             </button>
           )}
-          {agent?.role === 'commuter' && (
-            <label className="btn ask__photo" title="Photo of a jeepney's signboard">
+          {(agent?.role === 'commuter' || agent?.role === 'driver') && (
+            <label
+              className="btn ask__photo"
+              title={
+                agent.role === 'driver'
+                  ? 'Photo of a fare matrix'
+                  : "Photo of a jeepney's signboard or fare matrix"
+              }
+            >
               Photo
               <input
                 type="file"
