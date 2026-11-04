@@ -8,7 +8,7 @@ SakaySightAI is a Meta AI-powered public transport prototype for **traditional j
 
 **Built for the Meta Global AI Developer Hackathon ("Build for Your World") · Meta Muse Wonder · OpenStreetMap geography · Simulation-led product development**
 
-[Explore the evidence and savings math](./docs/evidence-and-decision-math.md) · [Read the product and technical notes](./Notes.md) · [Inspect saved experiments](./docs/simulation-results/README.md)
+**[Try the live demo](https://commute-ai-lilac.vercel.app)** (open Demo scenes in the Driver or Commuter tab) · [Explore the evidence and savings math](./docs/evidence-and-decision-math.md) · [Read the product and technical notes](./Notes.md) · [Inspect saved experiments](./docs/simulation-results/README.md)
 
 ## The problem
 
