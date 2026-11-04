@@ -6,9 +6,31 @@
 
 SakaySightAI is a Meta AI-powered public transport prototype for **traditional jeepneys, modern jeepneys, UV Express and buses**. It brings commuters, drivers and operators into a shared 3D world where seats, queues, walking journeys and vehicle movements inform the next decision—with questions and explanations in English, Tagalog or Taglish.
 
-**Built for the Meta Global AI Developer Hackathon · OpenStreetMap geography · Voice and contextual guidance · Simulation-led product development**
+**Built for the Meta Global AI Developer Hackathon ("Build for Your World") · Meta Muse Wonder · OpenStreetMap geography · Simulation-led product development**
 
 [Explore the evidence and savings math](./docs/evidence-and-decision-math.md) · [Read the product and technical notes](./Notes.md) · [Inspect saved experiments](./docs/simulation-results/README.md)
+
+## The problem
+
+- **Drivers** pay the day's boundary to the owner before a single fare, then diesel, and keep what is left. They cannot see riders running for them from side streets or a crowd across the road with no ride coming, and diesel can differ by about ₱5 a litre between stations on the same road.
+- **Commuters** do not know whether the next ride has a seat. A signboard shows only the two ends of a route. Off the main road they walk, or pay a tricycle, just to reach it, and on a long ride home they can doze off past their stop.
+- The system runs on human knowledge (barkers, *pakiusog*, *sabit*, passing riders to the jeep behind) that no app understands.
+
+## What Muse does
+
+SakaySightAI puts Meta's **Muse Wonder** (`muse-wonder-1.0`, through the Meta Model API) inside a 3D twin of Metro Manila's public transport as an agent. A driver or commuter asks in Taglish or English (spoken questions are transcribed by Meta's `muse-voice-transcribe-1.0`), Muse picks from about twenty tools the app runs, and it acts on the answer. Every number comes from a tool; an answer with a number Muse was not given is thrown away.
+
+| For drivers | For commuters |
+| --- | --- |
+| **Which way pays:** prices the route and up to two ways round a jam in fares, diesel and minutes, draws them on the map, and drives the best one. Public streets only: OpenStreetMap private streets and gates are closed to jeepneys. | **How do I get there:** plans a trip across 626 routes, with changes and fares, and draws it. |
+| **Spread the fleet:** first come, first served across the whole fleet. Riders another jeepney reaches first are theirs, and a side street two jeepneys already take is full, so the next driver is sent another way that still pays. | **The jeep comes to my street:** when a jeepney going round a jam comes down your street, Muse tells you to wait there, saving the tricycle fare to the main road. |
+| **Riders running late:** sees who is coming from the side streets and holds at the stop for those who will make it (up to 2 minutes for a jeepney, 1 for a bus). | **Read this signboard:** reads a photo of a jeepney's board and checks whether the route passes your destination. |
+| **Pass riders on, go back:** hands the last riders to the jeepney behind and U-turns for a crowd nobody is coming for. | **I missed my ride:** plans again from where you stand, by the clock. |
+| **Diesel plan:** where to fill and how many litres for the rounds left, at the cheapest reachable station, and turns in there. | **Wake me at my stop:** with Automatic AI on, Muse speaks up unasked and wakes you before your stop. |
+
+**The 3-minute demo** shows ten of these as staged scenes: Which way pays, Spread the fleet, Rush hour on España (Manila), Riders running late, Pass riders on, How do I get there, Read this signboard (Cubao), The jeep comes to my street (Sampaloc), I missed my modern jeepney and Wake me at my stop.
+
+**Real:** OpenStreetMap streets and buildings, 626 routes from the 2015 DOTC data, LTFRB fares, DOE diesel prices, phone GPS, and Muse's tools and answers. **Simulated:** riders, traffic, tank levels and earnings.
 
 ## Four vehicle types, one connected transport experience
 
@@ -47,12 +69,12 @@ The software includes browser GPS tracking, planning logic and Meta API integrat
 
 ## What Meta AI adds
 
-**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the Driver and Commuter panels list 23 moments made ready. Pick one and the twin is rebuilt at that time, with those vehicles, riders and diesel, and the line to say on the mic waiting in the Ask box. Muse answers from its tools as anywhere else; only the setting is staged.
+**Demo scenes** ([`app/demoScenes.ts`](./src/app/demoScenes.ts)): the Driver and Commuter panels list 29 moments made ready (18 for drivers, 11 for commuters, across jeepneys, modern jeepneys, UV Express and buses; each commuter card says who it is for and why it helps). Pick one and the twin is rebuilt at that time, with those vehicles, riders and diesel, and the line to say on the mic waiting in the Ask box. Muse answers from its tools as anywhere else; only the setting is staged.
 
 Ask about the situation in your own words. Meta transcription handles recorded questions. **The Sakay Agent** is Muse with tools ([`api/agent.ts`](./api/agent.ts), [`core/agent`](./src/core/agent)): it decides what to look up and acts on the app, while every number comes from the simulation.
 
 - **Commuters:** "Paano pumunta sa Cubao?" plans the trip and draws it on the map. A photo of a vehicle's signboard is read by Muse and checked against the network: yes, no and how close it comes, or that it does not know. The agent gives the next rides by the clock and re-routes after a missed ride.
-- **Drivers:** traffic ahead, a way round by side streets (with gas stations, riders coming along it, and the riders it skips; it always warns that this leaves the franchise route), whether to hold back behind a line of vehicles, whether seats are enough, and who will reach a stop just after the vehicle passes.
+- **Drivers:** traffic ahead; which way pays (`compare_ways`, then `take_way`: the route and up to two ways round, priced and drawn, first come, first served across the fleet); a way round by side streets (it says it leaves the franchise route and comes back before the riders' stops); whether to hold back behind a line of vehicles; whether seats are enough; who will reach a stop just after the vehicle passes, and waiting for them; passing riders to the jeepney behind; and a diesel plan for the rounds left.
 - **Automatic AI:** an On/Off switch that appears only with one vehicle or person selected, on the Live map and in the Driver and Commuter apps, and is on for one at a time. Rules spot the moment; Muse says it in Taglish, unasked: to a driver about the road ahead, to a commuter about their ride and when to get off. It falls silent when switched off.
 - **Try it:** the driver's Ask tab has the questions as suggestions and a **Simulate traffic ahead** button.
 
