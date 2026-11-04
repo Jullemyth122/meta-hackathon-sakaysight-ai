@@ -170,7 +170,9 @@ export function TwinScene() {
 
   return (
     <>
-      <Environment hourOf={() => twin.fleet.timeOfDay / 3600} />
+      {/* Daylight at every hour, night included: the map stays bright and easy to read
+          (Environment can follow the clock with hourOf). */}
+      <Environment />
       <MapControls
         makeDefault
         enabled={follow?.view !== 'inside'}

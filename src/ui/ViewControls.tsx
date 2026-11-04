@@ -294,11 +294,14 @@ function DayClock() {
     : twin.night
       ? skipNight && speed > 0
         ? ' · night, skipping to morning'
-        : ' · night, all parked'
+        : ' · night, all parked: speed it up or skip the night'
       : '';
   return (
-    <span className="chip day-clock" title="Simulated day of the month and time">
-      Day {day} · {clockText(twin.clockS).slice(0, 5)}
+    <span
+      className="chip day-clock"
+      title="Simulation time, not your own clock: the simulated day starts early in the morning. Speed it up, or skip nights under More."
+    >
+      Day {day} · {clockText(twin.clockS).slice(0, 5)} sim time
       {note}
     </span>
   );
