@@ -294,7 +294,7 @@ function DayClock() {
     : twin.night
       ? skipNight && speed > 0
         ? ' · night, skipping to morning'
-        : ' · night, all parked: speed it up or skip the night'
+        : ' · night, all parked'
       : '';
   return (
     <span

@@ -345,6 +345,177 @@
   white-space: pre-line;
 }
 
+// The way in to voice mode: the first thing in the Ask box, big enough for a thumb.
+.ask__talk {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 16px;
+  font-weight: 700;
+  touch-action: manipulation;
+}
+
+// On a phone the Ask box is a scroll away: a round mic floats at the bottom, into voice mode.
+.ask__fab {
+  display: none;
+}
+
+@media (width <= 720px) {
+  .ask__fab {
+    position: fixed;
+    z-index: 800;
+    right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    display: grid;
+    place-items: center;
+    width: 64px;
+    height: 64px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    box-shadow:
+      0 2px 6px rgb(0 0 0 / 0.2),
+      0 8px 24px rgb(0 0 0 / 0.18);
+    touch-action: manipulation;
+  }
+}
+
+// Voice mode: the mic big, over the whole screen, until closed.
+.voice-mode {
+  position: fixed;
+  z-index: 900;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--fg);
+
+  &__top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__modes {
+    display: flex;
+    gap: 6px;
+  }
+
+  &__mode {
+    height: 36px;
+    padding: 0 14px;
+    font-size: 14px;
+    cursor: pointer;
+
+    &--on {
+      border-color: var(--fg);
+      background: var(--fg);
+      color: var(--bg);
+    }
+  }
+
+  &__centre {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: center;
+    margin-top: 4vh;
+  }
+
+  // Round, thumb-sized; red while it listens, its ring following your voice.
+  &__mic {
+    display: grid;
+    place-items: center;
+    width: min(46vw, 180px);
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    transition:
+      box-shadow 0.1s linear,
+      transform 0.1s;
+
+    // Holding to talk must not select text or open a menu on phones.
+    touch-action: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+
+    &:active {
+      transform: scale(0.97);
+    }
+
+    &--recording,
+    &--holding {
+      background: var(--bad);
+      color: #fff;
+      box-shadow: 0 0 0 calc(6px + var(--level, 0) * 36px)
+        color-mix(in srgb, var(--bad) 25%, transparent);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+  }
+
+  &__status {
+    max-width: 34ch;
+    min-height: 2.8em;
+    margin: 0;
+    color: var(--muted);
+    font-size: 16px;
+    text-align: center;
+  }
+
+  &__talk {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(100%, 640px);
+    margin: 0 auto;
+  }
+
+  &__you {
+    margin: 0;
+    color: var(--muted);
+    font-size: 15px;
+  }
+
+  // On a wider screen it takes the side panel's place, so the map and the ways Muse draws stay in view.
+  @media (width > 720px) {
+    left: auto;
+    width: min(440px, 100%);
+    border-left: 1px solid var(--line);
+    box-shadow: -8px 0 30px rgb(0 0 0 / 0.12);
+  }
+
+  &__answer {
+    margin: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+    font-size: clamp(18px, 2.4vw, 22px);
+    line-height: 1.45;
+    white-space: pre-line;
+  }
+}
+
 .ask {
   display: flex;
   flex-direction: column;

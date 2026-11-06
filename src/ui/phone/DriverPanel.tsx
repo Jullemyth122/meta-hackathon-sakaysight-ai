@@ -444,6 +444,7 @@ export function DriverPanel() {
           <h3 className="section__title">Ask</h3>
           <TripBudgetSettings value={budgetInputs} onChange={setBudgetInputs} />
           <AskBox
+            fab
             suggestions={SUGGESTIONS}
             keywords={voiceKeywords(twin.route)}
             agent={{ role: 'driver', screen: screenNow, run: driverTools(twin, index) }}
